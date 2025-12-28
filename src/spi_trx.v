@@ -1,0 +1,397 @@
+// SPI Flash Transceiver Module
+// Emulates a 32MB SPI Flash (Micron N25Q256A compatible)
+//
+// Adapted for Gowin FPGAs - uses portable Verilog
+
+`default_nettype none
+
+module spi_trx(
+    input wire clk,
+
+    input wire spi_clk,
+    input wire spi_reset,    // Active high
+    input wire spi_csel,     // Active low chip select
+    input wire spi_mosi,
+    output wire spi_miso,
+    output reg spi_miso_enable = 0,
+    output reg spi_debug = 0,
+    
+    output wire spi_active,
+    
+    // SDRAM control signals
+    output reg ram_inhibit_refresh = 0,
+    output reg ram_activate = 0,
+    output reg ram_read = 0,
+    
+    output reg [21:0] ram_addr,
+    input wire [63:0] ram_read_buffer,
+    input wire ram_read_busy,
+    
+    // For writing
+    output reg write_cmd,
+    output reg write_type,
+    output reg [21:0] write_addr,
+    output reg [12:0] write_len,
+    input wire write_done,
+    
+    output reg write_buf_strobe,
+    output reg [7:0] write_buf_offset,
+    output reg [7:0] write_buf_val,
+    
+    output reg log_strobe = 0,
+    output reg [7:0] log_val = 0
+);
+
+    wire is_selected = !spi_reset && !spi_csel;
+    
+    assign spi_active = is_selected;
+    
+    // Detect falling edge of CS (start of transaction)
+    reg spi_csel_prev;
+    wire cs_falling = spi_csel_prev && !spi_csel;
+    
+    always @(posedge spi_clk or posedge spi_csel) begin
+        if (spi_csel)
+            spi_csel_prev <= 1;
+        else
+            spi_csel_prev <= spi_csel;
+    end
+
+    reg [2:0] bit_count_in;
+    reg [7:0] mosi_byte;
+    reg [7:0] miso_byte;
+    
+    // JEDEC ID for Micron N25Q256A (32MB)
+    wire [23:0] jedec_id = {8'h19, 8'hBA, 8'h20};
+    
+    // SPI Flash command definitions
+    localparam
+        CMD_PAGEPROGRAM     = 8'h02,
+        CMD_READ            = 8'h03,
+        CMD_WRITEDISABLE    = 8'h04,
+        CMD_READSTATUS      = 8'h05,
+        CMD_WRITEENABLE     = 8'h06,
+        CMD_SUBSECERASE     = 8'h20,
+        CMD_READID1         = 8'h9E,
+        CMD_READID2         = 8'h9F,
+        CMD_4BYTEENABLE     = 8'hB7,
+        CMD_SECTORERASE     = 8'hD8,
+        CMD_4BYTEDISABLE    = 8'hE9,
+        CMD_LOG             = 8'hF2;
+    
+    // State machine states
+    localparam
+        STA_CMD         = 0, // Receiving command byte
+        STA_READSTATUS  = 1, // Reading status register
+        STA_ADDR_READ   = 2, // Receiving address for read command
+        STA_READ        = 3, // Sending data for read command
+        STA_READID      = 4, // Reading JEDEC ID
+        STA_ADDR_WRITE  = 5, // Receiving address for write command
+        STA_WRITE       = 6, // Receiving data for write command
+        STA_ADDR_ERASE  = 7, // Receiving address for erase command
+        STA_ERASE       = 8, // Erasing
+        STA_LOG         = 9; // Logging (passthrough to serial)
+    
+    reg [3:0] state;
+    
+    reg [31:0] addr;
+    reg [4:0] addr_count;
+    reg addr_4byte;
+    
+    reg fresh_read;
+    
+    // Status register
+    // bit1 = write enable latch
+    // bit0 = write in progress
+    reg [1:0] status_reg;
+    
+    reg [1:0] write_done_buf;
+    
+    // MISO output register - directly directly update on negedge
+    reg miso_out_reg;
+    assign spi_miso = miso_out_reg;
+
+    // Main SPI state machine - runs on positive edge of SPI clock
+    always @(posedge spi_clk or posedge spi_reset) begin
+        if (spi_reset) begin
+            // Power-on reset
+            bit_count_in <= 0;
+            mosi_byte <= 0;
+            miso_byte <= 0;
+            spi_miso_enable <= 0;
+            state <= STA_CMD;
+            addr <= 0;
+            addr_count <= 0;
+            addr_4byte <= 0;
+            fresh_read <= 0;
+            status_reg <= 2'b00;
+            write_done_buf <= 0;
+            log_strobe <= 0;
+            log_val <= 0;
+            ram_inhibit_refresh <= 0;
+            ram_activate <= 0;
+            ram_read <= 0;
+            ram_addr <= 0;
+            write_cmd <= 0;
+            write_type <= 0;
+            write_addr <= 0;
+            write_len <= 0;
+            write_buf_strobe <= 0;
+            write_buf_offset <= 0;
+            write_buf_val <= 0;
+        end
+        else if (!is_selected) begin
+            // CS is high - idle state, reset for next transaction
+            bit_count_in <= 6;
+            mosi_byte <= 0;
+            miso_byte <= 0;
+            spi_miso_enable <= 0;
+            state <= STA_CMD;
+            addr <= 0;
+            addr_count <= 0;
+            fresh_read <= 0;
+            log_strobe <= 0;
+            ram_inhibit_refresh <= 0;
+            ram_activate <= 0;
+            ram_read <= 0;
+            write_cmd <= 0;
+            write_buf_strobe <= 0;
+        end
+        else begin
+            // Active transaction
+            fresh_read <= 0;
+            log_strobe <= 0;
+            
+            write_done_buf <= {write_done_buf[0], write_done};
+            if (status_reg[0] && write_done_buf[1])
+                status_reg[0] <= 0;
+                
+            write_buf_strobe <= 0;
+            
+            // Sample MOSI, advance bit count
+            mosi_byte[bit_count_in] <= spi_mosi;
+
+            if ((state == STA_CMD) && (bit_count_in == 0)) begin
+                // Received full command byte
+                
+                case ({mosi_byte[7:1], spi_mosi})
+                    
+                CMD_READSTATUS: begin
+                    state <= STA_READSTATUS;
+                    spi_miso_enable <= 1;
+                    miso_byte <= {6'b0, status_reg};
+                end
+                
+                CMD_WRITEDISABLE: begin
+                    status_reg[1] <= 0;
+                end
+                
+                CMD_WRITEENABLE: begin
+                    status_reg[1] <= 1;
+                end
+                
+                CMD_4BYTEENABLE: begin
+                    if (status_reg[1]) addr_4byte <= 1;
+                end
+                
+                CMD_4BYTEDISABLE: begin
+                    if (status_reg[1]) addr_4byte <= 0;
+                end
+                    
+                CMD_READ: begin
+                    state <= STA_ADDR_READ;
+                    addr_count <= addr_4byte ? 31 : 23;
+                end
+                
+                CMD_SUBSECERASE: begin
+                    if (status_reg[1]) begin
+                        state <= STA_ADDR_ERASE;
+                        addr_count <= addr_4byte ? 31 : 23;
+                        write_len <= 13'h01FF; // 4KB subsector
+                    end
+                end
+                
+                CMD_SECTORERASE: begin
+                    if (status_reg[1]) begin
+                        state <= STA_ADDR_ERASE;
+                        addr_count <= addr_4byte ? 31 : 23;
+                        write_len <= 13'h1FFF; // 64KB sector
+                    end
+                end
+                
+                CMD_PAGEPROGRAM: begin
+                    if (status_reg[1]) begin
+                        state <= STA_ADDR_WRITE;
+                        addr_count <= addr_4byte ? 31 : 23;
+                        write_len <= 13'h1F; // 256 byte page
+                    end
+                end
+                
+                CMD_READID1,
+                CMD_READID2: begin
+                    state <= STA_READID;
+                    spi_miso_enable <= 1;
+                    miso_byte <= jedec_id[7:0];
+                    addr_count <= 1;
+                end
+                
+                CMD_LOG: begin
+                    state <= STA_LOG;
+                end
+                    
+                endcase
+                
+                log_strobe <= 1;
+                log_val <= {mosi_byte[7:1], spi_mosi};
+            end
+            else if ((state == STA_READSTATUS) && (bit_count_in == 0)) begin
+                miso_byte <= {6'b0, status_reg};
+            end
+            else if (state == STA_ADDR_READ) begin
+                // Receiving address bytes for read
+                
+                if (addr_count == 7) begin
+                    ram_inhibit_refresh <= 1;
+                end
+                else if (addr_count == 4) begin
+                    ram_activate <= 1;
+                    ram_addr[21:7] <= addr[24:10];
+                end
+                else if (addr_count == 3) begin
+                    ram_read <= 1;
+                    ram_addr[6:0] <= {addr[9:4], spi_mosi};
+                end
+                else if (addr_count == 0) begin
+                    state <= STA_READ;
+                    spi_miso_enable <= 1;
+
+                    ram_inhibit_refresh <= 0;
+                    ram_activate <= 0;
+                    ram_read <= 0;
+                        
+                    fresh_read <= 1;
+                end
+                
+                if (bit_count_in == 0) begin
+                    log_strobe <= 1;
+                    log_val <= {mosi_byte[7:1], spi_mosi};
+                end
+                
+                addr[addr_count] <= spi_mosi;
+                addr_count <= addr_count - 1;
+            end
+            else if (state == STA_READ) begin
+                // Advance the read
+                
+                if (addr[2:0] == 7) begin
+                    // Reaching end of burst, start reading new one
+                    
+                    if (bit_count_in == 7) begin
+                        ram_inhibit_refresh <= 1;
+                    end
+                    else if (bit_count_in == 4) begin
+                        ram_activate <= 1;
+                        ram_addr <= ram_addr + 1;
+                    end
+                    else if (bit_count_in == 3) begin
+                        ram_read <= 1;
+                    end
+                    else if (bit_count_in == 0) begin
+                        ram_inhibit_refresh <= 0;
+                        ram_activate <= 0;
+                        ram_read <= 0;
+                        
+                        fresh_read <= 1;
+                    end
+                end
+                
+                if (bit_count_in == 0) begin
+                    miso_byte <= ram_read_buffer[(addr[2:0]+1)*8 +: 8];
+                    addr <= addr + 1;
+                end
+                
+                if (fresh_read) 
+                    miso_byte <= ram_read_buffer[addr[2:0]*8 +: 8];
+            end
+            else if (state == STA_READID) begin
+                if (bit_count_in == 0) begin
+                    if (addr_count < 3) begin
+                        miso_byte <= jedec_id[addr_count*8 +: 8];
+                        addr_count <= addr_count + 1;
+                    end
+                    else
+                        miso_byte <= 0;
+                end
+            end
+            else if (state == STA_ADDR_ERASE) begin
+                if (addr_count == 0) begin
+                    state <= STA_ERASE;
+                    write_cmd <= 1;
+                    write_type <= 1;
+                    
+                    if (write_len[12])
+                        write_addr <= {addr[24:16], 13'b0};
+                    else
+                        write_addr <= {addr[24:12], 9'b0};
+                        
+                    status_reg[1] <= 0; // Reset write enable
+                    status_reg[0] <= 1; // Write in progress
+                end
+                
+                addr[addr_count] <= spi_mosi;
+                addr_count <= addr_count - 1;
+                
+                if (bit_count_in == 0) begin
+                    log_strobe <= 1;
+                    log_val <= {mosi_byte[7:1], spi_mosi};
+                end
+            end
+            else if (state == STA_ADDR_WRITE) begin
+                if (addr_count == 0) begin
+                    state <= STA_WRITE;
+                    write_cmd <= 1;
+                    write_type <= 0;
+                    
+                    write_addr <= {addr[24:8], 5'b0};
+                        
+                    status_reg[1] <= 0; // Reset write enable
+                    status_reg[0] <= 1; // Write in progress
+                end
+                
+                addr[addr_count] <= spi_mosi;
+                addr_count <= addr_count - 1;
+                
+                if (bit_count_in == 0) begin
+                    log_strobe <= 1;
+                    log_val <= {mosi_byte[7:1], spi_mosi};
+                end
+            end
+            else if ((state == STA_WRITE) && (bit_count_in == 0)) begin
+                // Incoming data for write command
+                write_buf_strobe <= 1;
+                write_buf_offset <= addr[7:0];
+                write_buf_val <= {mosi_byte[7:1], spi_mosi};
+                
+                addr[7:0] <= addr[7:0] + 1;
+            end
+            else if (state == STA_LOG) begin
+                if (bit_count_in == 0) begin
+                    log_strobe <= 1;
+                    log_val <= {mosi_byte[7:1], spi_mosi};
+                end
+            end
+            
+            bit_count_in <= bit_count_in - 1;
+        end
+    end
+    
+    // MISO output - directly directly update based on state
+    // Use combinational logic for output selection
+    always @(*) begin
+        if (fresh_read)
+            miso_out_reg = ram_read_buffer[addr[2:0]*8 + 7];
+        else
+            miso_out_reg = miso_byte[bit_count_in];
+    end
+
+endmodule
