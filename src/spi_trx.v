@@ -82,6 +82,7 @@ module spi_trx(
         CMD_WRITEDISABLE    = 8'h04,
         CMD_READSTATUS      = 8'h05,
         CMD_WRITEENABLE     = 8'h06,
+        CMD_FASTREAD        = 8'h0B,
         CMD_SUBSECERASE     = 8'h20,
         CMD_READID1         = 8'h9E,
         CMD_READID2         = 8'h9F,
@@ -92,18 +93,21 @@ module spi_trx(
     
     // State machine states
     localparam
-        STA_CMD         = 0, // Receiving command byte
-        STA_READSTATUS  = 1, // Reading status register
-        STA_ADDR_READ   = 2, // Receiving address for read command
-        STA_READ        = 3, // Sending data for read command
-        STA_READID      = 4, // Reading JEDEC ID
-        STA_ADDR_WRITE  = 5, // Receiving address for write command
-        STA_WRITE       = 6, // Receiving data for write command
-        STA_ADDR_ERASE  = 7, // Receiving address for erase command
-        STA_ERASE       = 8, // Erasing
-        STA_LOG         = 9; // Logging (passthrough to serial)
+        STA_CMD         = 0,  // Receiving command byte
+        STA_READSTATUS  = 1,  // Reading status register
+        STA_ADDR_READ   = 2,  // Receiving address for read command
+        STA_READ        = 3,  // Sending data for read command
+        STA_READID      = 4,  // Reading JEDEC ID
+        STA_ADDR_WRITE  = 5,  // Receiving address for write command
+        STA_WRITE       = 6,  // Receiving data for write command
+        STA_ADDR_ERASE  = 7,  // Receiving address for erase command
+        STA_ERASE       = 8,  // Erasing
+        STA_LOG         = 9,  // Logging (passthrough to serial)
+        STA_DUMMY       = 10; // Dummy clocks for fast read
     
     reg [3:0] state;
+    reg [2:0] dummy_count = 0; // Counter for dummy clocks in fast read
+    reg is_fast_read = 0;      // Flag to indicate fast read command
     
     reg [31:0] addr;
     reg [4:0] addr_count;
@@ -135,6 +139,8 @@ module spi_trx(
                 
                 addr <= 0;
                 addr_count <= 0;
+                dummy_count <= 0;
+                is_fast_read <= 0;
                 
                 log_strobe <= 0;
                 log_val <= 0;
@@ -201,6 +207,12 @@ module spi_trx(
                         addr_count <= addr_4byte ? 31 : 23;
                     end
                     
+                    CMD_FASTREAD: begin
+                        state <= STA_ADDR_READ;
+                        addr_count <= addr_4byte ? 31 : 23;
+                        is_fast_read <= 1;
+                    end
+
                     CMD_SUBSECERASE: begin
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
@@ -260,14 +272,21 @@ module spi_trx(
                         ram_addr[3:0] <= {addr[6:4], spi_mosi};
                     end
                     else if (addr_count == 0) begin
-                        state <= STA_READ;
-                        spi_miso_enable <= 1;
-
                         ram_inhibit_refresh <= 0;
                         ram_activate <= 0;
                         ram_read <= 0;
-                            
-                        fresh_read <= 1;
+
+                        if (is_fast_read) begin
+                            // Fast read: need 8 dummy clocks first
+                            state <= STA_DUMMY;
+                            dummy_count <= 7;
+                        end
+                        else begin
+                            // Normal read: go straight to data
+                            state <= STA_READ;
+                            spi_miso_enable <= 1;
+                            fresh_read <= 1;
+                        end
                     end
                     
                     if (bit_count_in == 0) begin
@@ -277,6 +296,18 @@ module spi_trx(
                     
                     addr[addr_count] <= spi_mosi;
                     addr_count <= addr_count - 1;
+                end
+                else if (state == STA_DUMMY) begin
+                    // Dummy clock cycles for fast read command
+                    // dummy_count counts down from 7 to 0 (8 clocks total)
+                    if (dummy_count == 0) begin
+                        state <= STA_READ;
+                        spi_miso_enable <= 1;
+                        fresh_read <= 1;
+                    end
+                    else begin
+                        dummy_count <= dummy_count - 1;
+                    end
                 end
                 else if (state == STA_READ) begin
                     // Advance the read
