@@ -11,10 +11,20 @@
  *   Pin 28 = MISO
  *   Pin 29 = POWER detection (active high)
  *   Pin 30 = Debug output
+ *
+ * Supported flash chips (selected via FLASH_CHIP parameter):
+ *   0 = Winbond W25Q64FV (8MB, default)
+ *   1 = Micron N25Q256A (32MB)
  */
 `default_nettype none
 
-module top(
+`ifndef FLASH_CHIP
+`define FLASH_CHIP 0
+`endif
+
+module top #(
+    parameter FLASH_CHIP = `FLASH_CHIP
+)(
     input wire clk_27mhz,         // 27MHz crystal oscillator
     
     // LEDs
@@ -174,7 +184,7 @@ module top(
     wire [21:0] spi_ram_addr;
     
     wire spi_write_cmd;
-    wire spi_write_type;
+    wire [1:0] spi_write_type;  // 0=page program, 1=sector/block erase, 2=chip erase
     wire [21:0] spi_write_addr;
     wire [12:0] spi_write_len;
     wire spi_write_done;
@@ -186,7 +196,9 @@ module top(
     wire log_strobe;
     wire [7:0] log_val;
     
-    spi_trx spi_trx_i(
+    spi_trx #(
+        .FLASH_CHIP(FLASH_CHIP)
+    ) spi_trx_i (
         .clk(clk),
         
         .spi_clk(spi_clk_in),

@@ -1,13 +1,22 @@
 # Tang Nano 20K SPI Flash Emulator
 
-FPGA-based SPI flash emulator for the Sipeed Tang Nano 20K board. Emulates a 32MB Micron N25Q256A SPI flash chip using the GW2AR-18's internal 64Mbit SDRAM.
+FPGA-based SPI flash emulator for the Sipeed Tang Nano 20K board using the GW2AR-18's internal 64Mbit (8MB) SDRAM.
 
 This is a port of the [ULX3S SPI flash emulator](https://github.com/your-repo/spi_flash) to the Tang Nano 20K, built entirely with the open-source toolchain (Yosys + nextpnr-himbaechel + Apycula).
 
+## Supported Flash Chips
+
+| Chip | FLASH_CHIP | Size | Address Mode | Notes |
+|------|------------|------|--------------|-------|
+| **Winbond W25Q64FV** | 0 (default) | 8MB | 3-byte only | Fits in available SDRAM |
+| Micron N25Q256A | 1 | 32MB | 3/4-byte | Exceeds SDRAM (only 8MB usable) |
+
+The Winbond W25Q64FV is the default and recommended chip to emulate, as its 8MB capacity matches the available SDRAM. The Micron N25Q256A emulation is retained for compatibility but only the first 8MB is actually stored.
+
 ## Features
 
-- Emulates a 32MB SPI flash (Micron N25Q256A compatible)
-- Supports 3-byte and 4-byte addressing modes
+- Emulates Winbond W25Q64FV (8MB) or Micron N25Q256A (32MB) SPI flash
+- 3-byte addressing (4-byte mode available for Micron chip only)
 - Handles SPI clock speeds up to 48 MHz
 - 3 Mbaud UART interface for loading flash contents
 - Uses internal 64Mbit SDRAM (no external memory needed)
@@ -73,12 +82,27 @@ nix develop
 ### Build Commands
 
 ```bash
-make          # Build bitstream
-make prog     # Program FPGA (volatile - lost on power cycle)
-make flash    # Program to flash (persistent)
-make tool     # Build spi-flash-tool
-make clean    # Clean build artifacts
+make                    # Build bitstream (Winbond W25Q64FV, default)
+make FLASH_CHIP=1       # Build for Micron N25Q256A
+make prog               # Program FPGA (volatile - lost on power cycle)
+make flash              # Program to flash (persistent)
+make tool               # Build spi-flash-tool
+make clean              # Clean build artifacts
 ```
+
+### Flash Chip Selection
+
+The emulated flash chip is selected at build time via the `FLASH_CHIP` variable:
+
+```bash
+# Winbond W25Q64FV (8MB, 3-byte address) - default
+make FLASH_CHIP=0
+
+# Micron N25Q256A (32MB, 3/4-byte address)
+make FLASH_CHIP=1
+```
+
+Run `make clean` before switching between chip configurations.
 
 ## Loading Flash Contents
 
@@ -197,19 +221,23 @@ ser.close()
 
 ## Supported SPI Commands
 
-| Command | Code | Description |
-|---------|------|-------------|
-| READ | 0x03 | Read data (3-byte address) |
-| READ4 | 0x13 | Read data (4-byte address) |
-| FAST_READ | 0x0B | Fast read with dummy byte |
-| READ_ID | 0x9F | Read JEDEC ID |
-| READ_STATUS | 0x05 | Read status register |
-| WRITE_ENABLE | 0x06 | Enable writes |
-| PAGE_PROGRAM | 0x02 | Program page (256 bytes) |
-| SECTOR_ERASE | 0x20 | Erase 4KB sector |
-| BLOCK_ERASE | 0xD8 | Erase 64KB block |
-| EN4B | 0xB7 | Enter 4-byte address mode |
-| EX4B | 0xE9 | Exit 4-byte address mode |
+| Command | Code | Description | Chip |
+|---------|------|-------------|------|
+| READ | 0x03 | Read data (3-byte address) | Both |
+| READ4 | 0x13 | Read data (4-byte address) | Micron only |
+| FAST_READ | 0x0B | Fast read with dummy byte | Both |
+| FAST_READ4 | 0x0C | Fast read (4-byte address) | Micron only |
+| READ_ID | 0x9F | Read JEDEC ID | Both |
+| READ_STATUS | 0x05 | Read status register | Both |
+| WRITE_ENABLE | 0x06 | Enable writes | Both |
+| WRITE_DISABLE | 0x04 | Disable writes | Both |
+| PAGE_PROGRAM | 0x02 | Program page (256 bytes) | Both |
+| SECTOR_ERASE | 0x20 | Erase 4KB sector | Both |
+| BLOCK_ERASE_32K | 0x52 | Erase 32KB block | Both |
+| BLOCK_ERASE_64K | 0xD8 | Erase 64KB block | Both |
+| CHIP_ERASE | 0xC7/0x60 | Erase entire chip | Both |
+| EN4B | 0xB7 | Enter 4-byte address mode | Micron only |
+| EX4B | 0xE9 | Exit 4-byte address mode | Micron only |
 
 ## Technical Details
 

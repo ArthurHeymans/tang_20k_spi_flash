@@ -1,11 +1,18 @@
 // SPI Flash Transceiver Module
-// Emulates a 32MB SPI Flash (Micron N25Q256A compatible)
+// Emulates SPI Flash chips:
+//   - Winbond W25Q64FV (8MB, default)
+//   - Micron N25Q256A (32MB, requires 4-byte addressing)
 //
 // Adapted for Gowin FPGAs - uses portable Verilog
 
 `default_nettype none
 
-module spi_trx(
+module spi_trx #(
+    // Flash chip selection:
+    //   0 = Winbond W25Q64FV (8MB, 3-byte address only)
+    //   1 = Micron N25Q256A (32MB, supports 4-byte address)
+    parameter FLASH_CHIP = 0
+)(
     input wire clk,
 
     input wire spi_clk,
@@ -29,7 +36,7 @@ module spi_trx(
     
     // For writing
     output reg write_cmd,
-    output reg write_type,
+    output reg [1:0] write_type,  // 0=page program, 1=sector/block erase, 2=chip erase
     output reg [21:0] write_addr,
     output reg [12:0] write_len,
     input wire write_done,
@@ -71,9 +78,17 @@ module spi_trx(
     reg [7:0] mosi_byte;
     reg [7:0] miso_byte;
     
-    // JEDEC ID for Micron N25Q256A (32MB)
+    // JEDEC ID configuration based on flash chip selection
     // Byte order: [7:0]=manufacturer, [15:8]=type, [23:16]=capacity
-    reg [23:0] jedec_id = {8'h19, 8'hBA, 8'h20};
+    // Winbond W25Q64FV:  Manufacturer=EFh, Type=40h, Capacity=17h (8MB)
+    // Micron N25Q256A:   Manufacturer=20h, Type=BAh, Capacity=19h (32MB)
+    localparam [23:0] JEDEC_WINBOND = {8'h17, 8'h40, 8'hEF};
+    localparam [23:0] JEDEC_MICRON  = {8'h19, 8'hBA, 8'h20};
+    
+    wire [23:0] jedec_id = (FLASH_CHIP == 0) ? JEDEC_WINBOND : JEDEC_MICRON;
+    
+    // 4-byte address mode is only supported on Micron N25Q256A
+    wire supports_4byte = (FLASH_CHIP == 1);
     
     // SPI Flash command definitions
     localparam
@@ -85,11 +100,14 @@ module spi_trx(
         CMD_FASTREAD        = 8'h0B,
         CMD_FASTREAD_4B     = 8'h0C,  // Fast Read with 4-byte address
         CMD_READ_4B         = 8'h13,  // Read with 4-byte address
-        CMD_SUBSECERASE     = 8'h20,
+        CMD_SECTORERASE_4K  = 8'h20,  // 4KB Sector Erase
+        CMD_BLOCKERASE_32K  = 8'h52,  // 32KB Block Erase
+        CMD_CHIPERASE1      = 8'h60,  // Chip Erase (alternate)
         CMD_READID1         = 8'h9E,
         CMD_READID2         = 8'h9F,
         CMD_4BYTEENABLE     = 8'hB7,
-        CMD_SECTORERASE     = 8'hD8,
+        CMD_CHIPERASE2      = 8'hC7,  // Chip Erase
+        CMD_BLOCKERASE_64K  = 8'hD8,  // 64KB Block Erase
         CMD_4BYTEDISABLE    = 8'hE9,
         CMD_LOG             = 8'hF2;
     
@@ -197,11 +215,11 @@ module spi_trx(
                     end
                     
                     CMD_4BYTEENABLE: begin
-                        if (status_reg[1]) addr_4byte <= 1;
+                        if (status_reg[1] && supports_4byte) addr_4byte <= 1;
                     end
                     
                     CMD_4BYTEDISABLE: begin
-                        if (status_reg[1]) addr_4byte <= 0;
+                        if (status_reg[1] && supports_4byte) addr_4byte <= 0;
                     end
                         
                     CMD_READ: begin
@@ -210,8 +228,11 @@ module spi_trx(
                     end
                     
                     CMD_READ_4B: begin
-                        state <= STA_ADDR_READ;
-                        addr_count <= 31;  // Always 4-byte address
+                        // 4-byte address read only supported on Micron
+                        if (supports_4byte) begin
+                            state <= STA_ADDR_READ;
+                            addr_count <= 31;  // Always 4-byte address
+                        end
                     end
                     
                     CMD_FASTREAD: begin
@@ -221,24 +242,48 @@ module spi_trx(
                     end
                     
                     CMD_FASTREAD_4B: begin
-                        state <= STA_ADDR_READ;
-                        addr_count <= 31;  // Always 4-byte address
-                        is_fast_read <= 1;
+                        // 4-byte address fast read only supported on Micron
+                        if (supports_4byte) begin
+                            state <= STA_ADDR_READ;
+                            addr_count <= 31;  // Always 4-byte address
+                            is_fast_read <= 1;
+                        end
                     end
 
-                    CMD_SUBSECERASE: begin
+                    CMD_SECTORERASE_4K: begin
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h01FF; // 4KB subsector
+                            write_len <= 13'h01FF; // 4KB sector (512 x 8-byte units)
                         end
                     end
                     
-                    CMD_SECTORERASE: begin
+                    CMD_BLOCKERASE_32K: begin
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h1FFF; // 64KB sector
+                            write_len <= 13'h0FFF; // 32KB block (4096 x 8-byte units)
+                        end
+                    end
+                    
+                    CMD_BLOCKERASE_64K: begin
+                        if (status_reg[1]) begin
+                            state <= STA_ADDR_ERASE;
+                            addr_count <= addr_4byte ? 31 : 23;
+                            write_len <= 13'h1FFF; // 64KB block (8192 x 8-byte units)
+                        end
+                    end
+                    
+                    CMD_CHIPERASE1,
+                    CMD_CHIPERASE2: begin
+                        if (status_reg[1]) begin
+                            state <= STA_ERASE;
+                            write_cmd <= 1;
+                            write_type <= 2'd2;   // Chip erase
+                            write_addr <= 22'b0;  // Start at address 0
+                            write_len <= 13'h0;   // Not used for chip erase
+                            status_reg[1] <= 0;   // Reset write enable
+                            status_reg[0] <= 1;   // Write in progress
                         end
                     end
                     
@@ -369,12 +414,18 @@ module spi_trx(
                     if (addr_count == 0) begin
                         state <= STA_ERASE;
                         write_cmd <= 1;
-                        write_type <= 1;
+                        write_type <= 2'd1;  // Sector/block erase
                         
-                        if (write_len[12])
-                            write_addr <= {addr[24:16], 13'b0};
+                        // Align address based on erase size (write_len in 8-byte units):
+                        //   4KB  = 0x01FF (512 units)  -> align to 12 bits (addr[24:12])
+                        //   32KB = 0x0FFF (4096 units) -> align to 15 bits (addr[24:15])
+                        //   64KB = 0x1FFF (8192 units) -> align to 16 bits (addr[24:16])
+                        if (write_len == 13'h1FFF)
+                            write_addr <= {addr[24:16], 13'b0};  // 64KB aligned
+                        else if (write_len == 13'h0FFF)
+                            write_addr <= {addr[24:15], 12'b0};  // 32KB aligned
                         else
-                            write_addr <= {addr[24:12], 9'b0};
+                            write_addr <= {addr[24:12], 9'b0};   // 4KB aligned
                             
                         status_reg[1] <= 0; // Reset write enable
                         status_reg[0] <= 1; // Write in progress
@@ -394,6 +445,9 @@ module spi_trx(
                         write_cmd <= 1;
                         write_type <= 0;
                         
+                        // Page-aligned address in 8-byte burst units
+                        // Flash byte addr[24:0] -> RAM addr = byte_addr[24:3] (divide by 8)
+                        // Page is 256 bytes = 32 x 8-byte bursts, so align to addr[24:8]
                         write_addr <= {addr[24:8], 5'b0};
                             
                         status_reg[1] <= 0; // Reset write enable

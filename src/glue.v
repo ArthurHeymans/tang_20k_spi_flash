@@ -30,7 +30,7 @@ module glue(
     input wire spi_csel,
     
     input wire spi_cmd_write,
-    input wire spi_write_type,    // 0=write 1=erase
+    input wire [1:0] spi_write_type,  // 0=page program, 1=sector/block erase, 2=chip erase
     input wire [21:0] spi_write_addr,
     input wire [12:0] spi_write_len,
     output reg spi_write_done,
@@ -91,9 +91,10 @@ module glue(
     reg spi_write_ack;
     reg [1:0] spi_cmd_write_buf;
     
-    reg i_spi_write_type;
+    reg [1:0] i_spi_write_type;  // 0=page program, 1=sector/block erase, 2=chip erase
     reg [2:0] i_spi_write_state;
     reg [12:0] i_spi_len;
+    reg [19:0] i_chip_erase_count;  // Counter for chip erase (8MB = 1M x 8-byte units = 20 bits)
     
     // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
@@ -133,6 +134,7 @@ module glue(
             spi_write_ack <= 0;
             spi_cmd_write_buf <= 0;
             spi_write_done <= 0;
+            i_chip_erase_count <= 0;
             
             spi_write_buf_strobe_buf <= 0;
             spi_write_buf_ack <= 0;
@@ -198,13 +200,20 @@ module glue(
                 spi_write_ack <= 1;
                 
                 i_spi_write_type <= spi_write_type;
-                i_spi_write_state <= spi_write_type ? 3 : 0;
+                // State 0 = page program read-modify-write start
+                // State 3 = erase direct write start
+                i_spi_write_state <= (spi_write_type != 0) ? 3 : 0;
                 
                 addr <= spi_write_addr;
                 i_spi_len <= spi_write_len;
                 spi_write_done <= 0;
                 
-                if (spi_write_type)
+                // For chip erase, set up counter for full 8MB
+                // 8MB = 0x800000 bytes = 0x100000 8-byte units = 1048576 units
+                if (spi_write_type == 2'd2)
+                    i_chip_erase_count <= 20'hFFFFF;  // 1M - 1 (will erase 1M units)
+                
+                if (spi_write_type != 0)
                     write_buffer <= 64'hFFFFFFFFFFFFFFFF;
             end
             
@@ -214,11 +223,13 @@ module glue(
                     // Activate for read
                     sdram_access_cmd <= 2'b11;
                     
-                    // Prepare data
+                    // Prepare data from page buffer
+                    // addr[4:0] is burst number within page (0-31)
+                    // Each burst covers 8 bytes: burst N covers bytes N*8 to N*8+7
                     for (i = 0; i < 8; i = i + 1) begin
-                        write_buffer[i*8 +: 8] <= i_spi_write_data[addr[4:0]*8 + i][7:0];
-                        write_mask[i] <= i_spi_write_data[addr[4:0]*8 + i][8];
-                        i_spi_write_data[addr[4:0]*8 + i][8] <= 0;
+                        write_buffer[i*8 +: 8] <= i_spi_write_data[{addr[4:0], 3'b000} + i][7:0];
+                        write_mask[i] <= i_spi_write_data[{addr[4:0], 3'b000} + i][8];
+                        i_spi_write_data[{addr[4:0], 3'b000} + i][8] <= 0;
                     end
 
                     i_spi_write_state <= 1;
@@ -226,6 +237,15 @@ module glue(
                 else if (i_spi_write_state == 1) begin
                     // Read
                     sdram_access_cmd <= 2'b01;
+                    i_spi_write_state <= 6;  // Go to wait state
+                end
+                else if (i_spi_write_state == 6) begin
+                    // Wait for read to complete
+                    if (!sdram_read_busy)
+                        i_spi_write_state <= 7;  // Extra wait cycle for data stability
+                end
+                else if (i_spi_write_state == 7) begin
+                    // Extra wait cycle - ensure read_buffer is stable
                     i_spi_write_state <= 2;
                 end
                 else if (i_spi_write_state == 2) begin
@@ -248,14 +268,28 @@ module glue(
                     i_spi_write_state <= 5;
                 end
                 else if (i_spi_write_state == 5) begin
-                    if (i_spi_len == 0) begin
-                        // Finished
+                    if (i_spi_write_type == 2'd2) begin
+                        // Chip erase - use separate counter
+                        if (i_chip_erase_count == 0) begin
+                            // Finished chip erase
+                            spi_writing <= 0;
+                            spi_write_done <= 1;
+                        end
+                        else begin
+                            // Continue chip erase
+                            i_spi_write_state <= 3;
+                            addr <= addr + 1;
+                            i_chip_erase_count <= i_chip_erase_count - 1;
+                        end
+                    end
+                    else if (i_spi_len == 0) begin
+                        // Finished sector/block erase or page program
                         spi_writing <= 0;
                         spi_write_done <= 1;
                     end
                     else begin
                         // Prepare for next burst
-                        i_spi_write_state <= spi_write_type ? 3 : 0;
+                        i_spi_write_state <= (i_spi_write_type != 0) ? 3 : 0;
                         addr <= addr + 1;
                         i_spi_len <= i_spi_len - 1;
                     end
@@ -263,7 +297,8 @@ module glue(
             end
             
             // Serial protocol handling
-            if (spi_reset || spi_csel_buf[1]) begin
+            // Only handle serial protocol when SPI is inactive AND no SPI write in progress
+            if ((spi_reset || spi_csel_buf[1]) && !spi_writing) begin
                 
                 if (rxd_strobe_buf) begin
 

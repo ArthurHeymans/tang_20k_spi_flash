@@ -6,6 +6,11 @@
 DEVICE = GW2AR-LV18QN88C8/I7
 FAMILY = GW2A-18C
 
+# Flash chip selection:
+#   0 = Winbond W25Q64FV (8MB, default) - fits in available SDRAM
+#   1 = Micron N25Q256A (32MB) - requires 4-byte addressing, exceeds SDRAM
+FLASH_CHIP ?= 0
+
 # Source files
 VERILOG_FILES = \
 	src/top.v \
@@ -34,7 +39,7 @@ $(BUILD_DIR):
 
 # Synthesize with yosys
 $(BUILD_DIR)/$(PROJ_NAME).json: $(VERILOG_FILES) | $(BUILD_DIR)
-	yosys -p "read_verilog $(VERILOG_FILES); synth_gowin -top $(TOP_MODULE) -json $@"
+	yosys -p "read_verilog -DFLASH_CHIP=$(FLASH_CHIP) $(VERILOG_FILES); synth_gowin -top $(TOP_MODULE) -json $@"
 
 # Place and route with nextpnr-himbaechel (Gowin backend)
 $(BUILD_DIR)/$(PROJ_NAME)_pnr.json: $(BUILD_DIR)/$(PROJ_NAME).json $(CST_FILE)
