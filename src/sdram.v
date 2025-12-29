@@ -111,9 +111,11 @@ module sdram(
     // For 8-byte burst access with 32-bit data bus:
     // Each burst read gives us 4 x 32-bit = 16 bytes
     // We use 8 bytes per logical access (interleaved)
-    wire [10:0] spi_row = spi_addr[21:11];
-    wire [1:0] spi_bank = spi_addr[10:9];
-    wire [7:0] spi_col = {spi_addr[8:2], 1'b0};  // Column aligned
+    // SPI address decoding - match UART path which uses {addr, 2'b0} format
+    // spi_addr is 22-bit burst address, treat as {addr, 2'b0}[23:2] effectively
+    wire [10:0] spi_row = spi_addr[19:9];
+    wire [1:0] spi_bank = spi_addr[8:7];
+    wire [7:0] spi_col = {spi_addr[6:0], 1'b0};
 
     wire [10:0] access_row = access_addr[21:11];
     wire [1:0] access_bank = access_addr[10:9];

@@ -253,11 +253,11 @@ module spi_trx(
                     end
                     else if (addr_count == 4) begin
                         ram_activate <= 1;
-                        ram_addr[21:7] <= addr[24:10];
+                        ram_addr[21:4] <= addr[24:7];
                     end
                     else if (addr_count == 3) begin
                         ram_read <= 1;
-                        ram_addr[6:0] <= {addr[9:4], spi_mosi};
+                        ram_addr[3:0] <= {addr[6:4], spi_mosi};
                     end
                     else if (addr_count == 0) begin
                         state <= STA_READ;
