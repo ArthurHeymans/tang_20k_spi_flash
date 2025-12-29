@@ -83,6 +83,8 @@ module spi_trx(
         CMD_READSTATUS      = 8'h05,
         CMD_WRITEENABLE     = 8'h06,
         CMD_FASTREAD        = 8'h0B,
+        CMD_FASTREAD_4B     = 8'h0C,  // Fast Read with 4-byte address
+        CMD_READ_4B         = 8'h13,  // Read with 4-byte address
         CMD_SUBSECERASE     = 8'h20,
         CMD_READID1         = 8'h9E,
         CMD_READID2         = 8'h9F,
@@ -207,9 +209,20 @@ module spi_trx(
                         addr_count <= addr_4byte ? 31 : 23;
                     end
                     
+                    CMD_READ_4B: begin
+                        state <= STA_ADDR_READ;
+                        addr_count <= 31;  // Always 4-byte address
+                    end
+                    
                     CMD_FASTREAD: begin
                         state <= STA_ADDR_READ;
                         addr_count <= addr_4byte ? 31 : 23;
+                        is_fast_read <= 1;
+                    end
+                    
+                    CMD_FASTREAD_4B: begin
+                        state <= STA_ADDR_READ;
+                        addr_count <= 31;  // Always 4-byte address
                         is_fast_read <= 1;
                     end
 
