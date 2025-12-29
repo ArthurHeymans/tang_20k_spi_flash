@@ -136,6 +136,8 @@ module glue(
             
             spi_write_buf_strobe_buf <= 0;
             spi_write_buf_ack <= 0;
+            
+            write_buffer <= 0;
 
             for (i = 0; i < 256; i = i + 1)
                 i_spi_write_data[i][8] <= 0;

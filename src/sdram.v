@@ -215,11 +215,12 @@ module sdram(
                         dq_oe_o <= 1;
                         
                         // Interleaved data layout for 32-bit bus
+                        // Match original 16-bit pattern: byte i's bits go to dq_o[i], dq_o[i+8], etc.
                         for (i = 0; i < 8; i = i + 1) begin
-                            dq_o[i*4+0] <= write_buffer[i*8 + 7 - wrbuf_read_ptr*4];
-                            dq_o[i*4+1] <= write_buffer[i*8 + 6 - wrbuf_read_ptr*4];
-                            dq_o[i*4+2] <= write_buffer[i*8 + 5 - wrbuf_read_ptr*4];
-                            dq_o[i*4+3] <= write_buffer[i*8 + 4 - wrbuf_read_ptr*4];
+                            dq_o[i]    <= write_buffer[i*8 + 7 - wrbuf_read_ptr*4];
+                            dq_o[i+8]  <= write_buffer[i*8 + 6 - wrbuf_read_ptr*4];
+                            dq_o[i+16] <= write_buffer[i*8 + 5 - wrbuf_read_ptr*4];
+                            dq_o[i+24] <= write_buffer[i*8 + 4 - wrbuf_read_ptr*4];
                         end
                         dqm_o <= 4'b0000;
 
@@ -307,7 +308,7 @@ module sdram(
                     cas_o <= 0;
                     we_o <= 1;
                     ba_o <= spi_bank;
-                    a_o[7:0] <= spi_col;
+                    a_o[9:0] <= {2'b00, spi_col};  // 8-bit column, bits 9:8 must be 0
                     a_o[10] <= 1; // Auto precharge
                     dq_oe_o <= 0;
                     dqm_o <= 4'b0000;
@@ -338,7 +339,7 @@ module sdram(
                     cas_o <= 0;
                     we_o <= 1;
                     ba_o <= access_bank;
-                    a_o[7:0] <= access_col;
+                    a_o[9:0] <= {2'b00, access_col};  // 8-bit column, bits 9:8 must be 0
                     a_o[10] <= 1; // Auto precharge
                     dq_oe_o <= 0;
                     dqm_o <= 4'b0000;
@@ -355,16 +356,17 @@ module sdram(
                     cas_o <= 0;
                     we_o <= 0;
                     ba_o <= access_bank;
-                    a_o[7:0] <= access_col;
+                    a_o[9:0] <= {2'b00, access_col};  // 8-bit column, bits 9:8 must be 0
                     a_o[10] <= 1; // Auto precharge
                     dq_oe_o <= 1;
                     
                     // First write data word (interleaved)
+                    // Match original 16-bit pattern: byte i's bits go to dq_o[i], dq_o[i+8], etc.
                     for (i = 0; i < 8; i = i + 1) begin
-                        dq_o[i*4+0] <= write_buffer[i*8 + 7];
-                        dq_o[i*4+1] <= write_buffer[i*8 + 6];
-                        dq_o[i*4+2] <= write_buffer[i*8 + 5];
-                        dq_o[i*4+3] <= write_buffer[i*8 + 4];
+                        dq_o[i]    <= write_buffer[i*8 + 7];
+                        dq_o[i+8]  <= write_buffer[i*8 + 6];
+                        dq_o[i+16] <= write_buffer[i*8 + 5];
+                        dq_o[i+24] <= write_buffer[i*8 + 4];
                     end
                     dqm_o <= 4'b0000;
                 end
@@ -394,11 +396,12 @@ module sdram(
             // Read data capture (de-interleave 32-bit data to 64-bit buffer)
             if ((readcount > tCAS) && (readcount <= tCAS + BURST_LEN)) begin
                 // Capture read data and de-interleave
+                // Match original 16-bit pattern: byte i's bits come from dq_i[i], dq_i[i+8], etc.
                 for (i = 0; i < 8; i = i + 1) begin
-                    read_buffer[i*8 + 7 - rdbuf_write_ptr*4] <= dq_i[i*4+0];
-                    read_buffer[i*8 + 6 - rdbuf_write_ptr*4] <= dq_i[i*4+1];
-                    read_buffer[i*8 + 5 - rdbuf_write_ptr*4] <= dq_i[i*4+2];
-                    read_buffer[i*8 + 4 - rdbuf_write_ptr*4] <= dq_i[i*4+3];
+                    read_buffer[i*8 + 7 - rdbuf_write_ptr*4] <= dq_i[i];
+                    read_buffer[i*8 + 6 - rdbuf_write_ptr*4] <= dq_i[i+8];
+                    read_buffer[i*8 + 5 - rdbuf_write_ptr*4] <= dq_i[i+16];
+                    read_buffer[i*8 + 4 - rdbuf_write_ptr*4] <= dq_i[i+24];
                 end
                 
                 if (rdbuf_write_ptr == BURST_LEN - 1) read_busy <= 0;
