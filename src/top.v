@@ -140,13 +140,18 @@ module top(
     
     // SPI power detection and reset logic
     reg [1:0] spi_power_reg;
-    reg spi_reset;
-    reg [16:0] spi_reset_count;
+    reg spi_reset = 1;
+    reg [16:0] spi_reset_count = 0;
+    
+    // Set to 1 to bypass power detection (for debugging without power pin connected)
+    localparam BYPASS_POWER_DETECT = 1;
+    
+    wire power_ok = BYPASS_POWER_DETECT ? 1'b1 : spi_power_reg[1];
     
     always @(posedge clk) begin
         spi_power_reg <= {spi_power_reg[0], spi_power_in};
         
-        if (!reset && spi_power_reg[1]) begin
+        if (!reset && power_ok) begin
             if (spi_reset && spi_reset_count[16]) begin
                 spi_reset <= 0;
                 spi_reset_count <= 0;
@@ -227,7 +232,7 @@ module top(
     
     sdram #(
         .CLK_FREQ_MHZ(132),
-        .BURST_LEN(4)
+        .BURST_LEN(2)
     ) sdram_i (
         .clk(clk),
         .reset(reset),

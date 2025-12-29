@@ -216,10 +216,10 @@ module sdram(
                         
                         // Interleaved data layout for 32-bit bus
                         for (i = 0; i < 8; i = i + 1) begin
-                            dq_o[i*4+0] <= write_buffer[i*8 + 7 - wrbuf_read_ptr*2];
-                            dq_o[i*4+1] <= write_buffer[i*8 + 6 - wrbuf_read_ptr*2];
-                            dq_o[i*4+2] <= write_buffer[i*8 + 5 - wrbuf_read_ptr*2];
-                            dq_o[i*4+3] <= write_buffer[i*8 + 4 - wrbuf_read_ptr*2];
+                            dq_o[i*4+0] <= write_buffer[i*8 + 7 - wrbuf_read_ptr*4];
+                            dq_o[i*4+1] <= write_buffer[i*8 + 6 - wrbuf_read_ptr*4];
+                            dq_o[i*4+2] <= write_buffer[i*8 + 5 - wrbuf_read_ptr*4];
+                            dq_o[i*4+3] <= write_buffer[i*8 + 4 - wrbuf_read_ptr*4];
                         end
                         dqm_o <= 4'b0000;
 
@@ -395,10 +395,10 @@ module sdram(
             if ((readcount > tCAS) && (readcount <= tCAS + BURST_LEN)) begin
                 // Capture read data and de-interleave
                 for (i = 0; i < 8; i = i + 1) begin
-                    read_buffer[i*8 + 7 - rdbuf_write_ptr*2] <= dq_i[i*4+0];
-                    read_buffer[i*8 + 6 - rdbuf_write_ptr*2] <= dq_i[i*4+1];
-                    read_buffer[i*8 + 5 - rdbuf_write_ptr*2] <= dq_i[i*4+2];
-                    read_buffer[i*8 + 4 - rdbuf_write_ptr*2] <= dq_i[i*4+3];
+                    read_buffer[i*8 + 7 - rdbuf_write_ptr*4] <= dq_i[i*4+0];
+                    read_buffer[i*8 + 6 - rdbuf_write_ptr*4] <= dq_i[i*4+1];
+                    read_buffer[i*8 + 5 - rdbuf_write_ptr*4] <= dq_i[i*4+2];
+                    read_buffer[i*8 + 4 - rdbuf_write_ptr*4] <= dq_i[i*4+3];
                 end
                 
                 if (rdbuf_write_ptr == BURST_LEN - 1) read_busy <= 0;

@@ -84,6 +84,9 @@ module glue(
     
     reg [1:0] spi_csel_buf;
     
+    // Heartbeat counter to show FPGA is running
+    reg [25:0] heartbeat;
+    
     reg spi_writing;
     reg spi_write_ack;
     reg [1:0] spi_cmd_write_buf;
@@ -153,10 +156,14 @@ module glue(
                 sdram_access_cmd <= 0;
                 
             spi_csel_buf <= {spi_csel_buf[0], spi_csel};
+            heartbeat <= heartbeat + 1;
 
-            led[7] <= !spi_reset && !spi_csel_buf[1];
+            led[7] <= !spi_reset && !spi_csel_buf[1];  // SPI active
             led[6] <= sdram_cmd_busy;
             led[5] <= spi_writing;
+            led[4] <= spi_reset;                        // Shows spi_reset state (HIGH = reset active)
+            led[3] <= !spi_csel_buf[1];                 // Shows CS state (lit when CS low)
+            led[0] <= heartbeat[25];                    // Heartbeat - should blink ~2Hz at 132MHz
             
             // Log strobe handling
             if (log_strobe_buf[1] && !log_ack) begin
