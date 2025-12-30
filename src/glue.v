@@ -54,6 +54,22 @@ module glue(
 
     localparam VERSION = 8'h01;
 
+    // SPI write states
+    localparam
+        SPI_ST_READ_ACTIVATE = 3'd0,
+        SPI_ST_READ_CMD      = 3'd1,
+        SPI_ST_MODIFY        = 3'd2,
+        SPI_ST_WRITE_ACTIVATE= 3'd3,
+        SPI_ST_WRITE_CMD     = 3'd4,
+        SPI_ST_NEXT          = 3'd5;
+
+    // Serial read/write states
+    localparam
+        SERIAL_ST_IDLE     = 3'd0,
+        SERIAL_ST_ACTIVATE = 3'd1,
+        SERIAL_ST_COMMAND  = 3'd2,
+        SERIAL_ST_DATA     = 3'd3;
+
     reg [7:0] cmd;
     reg [3:0] in_count;
 
@@ -73,322 +89,378 @@ module glue(
     reg [7:0] rxd_data_buf;
 
     wire sdram_busy = (sdram_access_cmd != 0) || sdram_cmd_busy;
+    wire serial_active = spi_reset || spi_csel_buf[1];
     
     reg [63:0] write_buffer;
     reg [7:0] write_mask;
     reg write_strobe;
     
     reg [1:0] log_strobe_buf;
-    always @(posedge clk) log_strobe_buf <= {log_strobe_buf[0], log_strobe};
     reg log_ack;
     
     reg [1:0] spi_csel_buf;
     
-    // Heartbeat counter to show FPGA is running
     reg [25:0] heartbeat;
     
     reg spi_writing;
     reg spi_write_ack;
     reg [1:0] spi_cmd_write_buf;
     
-    reg i_spi_write_type;  // 0=page program, 1=sector/block erase
+    reg i_spi_write_type;
     reg [2:0] i_spi_write_state;
     reg [12:0] i_spi_len;
     
-    // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
-    reg [1:0] spi_write_buf_strobe_buf;  // 2-stage sync like original
+    reg [1:0] spi_write_buf_strobe_buf;
     reg spi_write_buf_ack;
     
     integer i;
 
+    // =========================================================================
+    // Synchronizers and heartbeat
+    // =========================================================================
+    always @(posedge clk) begin
+        log_strobe_buf <= {log_strobe_buf[0], log_strobe};
+        spi_csel_buf <= {spi_csel_buf[0], spi_csel};
+        spi_cmd_write_buf <= {spi_cmd_write_buf[0], spi_cmd_write};
+        spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
+        rxd_strobe_buf <= rxd_strobe;
+        rxd_data_buf <= rxd_data;
+        heartbeat <= reset ? 0 : heartbeat + 1;
+    end
+
+    // =========================================================================
+    // TX output register (1-cycle delay for timing)
+    // =========================================================================
+    always @(posedge clk) begin
+        txd_strobe <= txd_strobe_buf;
+        txd_data <= txd_data_buf;
+    end
+
+    // =========================================================================
+    // LED status indicators
+    // =========================================================================
+    always @(posedge clk) begin
+        if (reset)
+            led <= 0;
+        else begin
+            led[7] <= !spi_reset && !spi_csel_buf[1];
+            led[6] <= sdram_cmd_busy;
+            led[5] <= spi_writing;
+            led[4] <= spi_reset;
+            led[3] <= !spi_csel_buf[1];
+            led[0] <= heartbeat[25];
+        end
+    end
+
+    // =========================================================================
+    // SDRAM interface defaults
+    // =========================================================================
+    always @(posedge clk) begin
+        if (reset) begin
+            sdram_access_cmd <= 0;
+            sdram_inhibit_refresh <= 0;
+        end
+        else begin
+            sdram_access_addr <= {addr, 2'b0};
+            sdram_write_buffer <= write_buffer;
+            sdram_inhibit_refresh <= 0;
+            if (sdram_access_cmd)
+                sdram_access_cmd <= 0;
+        end
+    end
+
+    // =========================================================================
+    // Log strobe handling
+    // =========================================================================
+    always @(posedge clk) begin
+        if (reset)
+            log_ack <= 0;
+        else if (!log_strobe_buf[1])
+            log_ack <= 0;
+        else if (log_strobe_buf[1] && !log_ack)
+            log_ack <= 1;
+    end
+
+    // =========================================================================
+    // SPI write buffer (page program data from SPI domain)
+    // =========================================================================
+    always @(posedge clk) begin
+        if (reset) begin
+            spi_write_buf_ack <= 0;
+            for (i = 0; i < 256; i = i + 1)
+                i_spi_write_data[i][8] <= 0;
+        end
+        else if (!spi_write_buf_strobe_buf[1])
+            spi_write_buf_ack <= 0;
+        else if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
+            i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
+            spi_write_buf_ack <= 1;
+        end
+    end
+
+    // =========================================================================
+    // SPI write command start
+    // =========================================================================
+    always @(posedge clk) begin
+        if (reset) begin
+            spi_write_ack <= 0;
+            spi_writing <= 0;
+            spi_write_done <= 0;
+            i_spi_write_type <= 0;
+            i_spi_write_state <= 0;
+            i_spi_len <= 0;
+        end
+        else if (!spi_cmd_write_buf[1])
+            spi_write_ack <= 0;
+        else if (spi_cmd_write_buf[1] && !spi_write_ack && spi_csel_buf[1]) begin
+            spi_writing <= 1;
+            spi_write_ack <= 1;
+            i_spi_write_type <= spi_write_type;
+            i_spi_write_state <= spi_write_type ? SPI_ST_WRITE_ACTIVATE : SPI_ST_READ_ACTIVATE;
+            i_spi_len <= spi_write_len;
+            spi_write_done <= 0;
+        end
+    end
+
+    // =========================================================================
+    // SPI write state machine
+    // =========================================================================
+    always @(posedge clk) begin
+        if (reset) begin
+            write_buffer <= 0;
+            write_mask <= 0;
+        end
+        else if (spi_cmd_write_buf[1] && !spi_write_ack && spi_csel_buf[1] && spi_write_type)
+            write_buffer <= 64'hFFFFFFFFFFFFFFFF;
+        else if (spi_writing && !sdram_busy) begin
+            case (i_spi_write_state)
+                SPI_ST_READ_ACTIVATE: begin
+                    sdram_access_cmd <= 2'b11;
+                    for (i = 0; i < 8; i = i + 1) begin
+                        write_buffer[i*8 +: 8] <= i_spi_write_data[{addr[4:0], 3'b000} + i][7:0];
+                        write_mask[i] <= i_spi_write_data[{addr[4:0], 3'b000} + i][8];
+                        i_spi_write_data[{addr[4:0], 3'b000} + i][8] <= 0;
+                    end
+                    i_spi_write_state <= SPI_ST_READ_CMD;
+                end
+
+                SPI_ST_READ_CMD: begin
+                    sdram_access_cmd <= 2'b01;
+                    i_spi_write_state <= SPI_ST_MODIFY;
+                end
+
+                SPI_ST_MODIFY: begin
+                    for (i = 0; i < 8; i = i + 1)
+                        if (!write_mask[i])
+                            write_buffer[i*8 +: 8] <= sdram_read_buffer[i*8 +: 8];
+                    i_spi_write_state <= SPI_ST_WRITE_ACTIVATE;
+                end
+
+                SPI_ST_WRITE_ACTIVATE: begin
+                    sdram_access_cmd <= 2'b11;
+                    i_spi_write_state <= SPI_ST_WRITE_CMD;
+                end
+
+                SPI_ST_WRITE_CMD: begin
+                    sdram_access_cmd <= 2'b10;
+                    i_spi_write_state <= SPI_ST_NEXT;
+                end
+
+                SPI_ST_NEXT: begin
+                    if (i_spi_len == 0) begin
+                        spi_writing <= 0;
+                        spi_write_done <= 1;
+                    end
+                    else begin
+                        i_spi_write_state <= i_spi_write_type ? SPI_ST_WRITE_ACTIVATE : SPI_ST_READ_ACTIVATE;
+                        addr <= addr + 1;
+                        i_spi_len <= i_spi_len - 1;
+                    end
+                end
+            endcase
+        end
+    end
+
+    // =========================================================================
+    // Serial RX: command and parameter parsing
+    // =========================================================================
     always @(posedge clk) begin
         if (reset) begin
             cmd <= CMD_NOP;
             in_count <= 0;
             addr <= 0;
             len <= 0;
-
-            read_state <= 0;
+            read_state <= SERIAL_ST_IDLE;
             read_pos <= 0;
-
-            write_state <= 0;
+            write_state <= SERIAL_ST_IDLE;
             write_pos <= 0;
-
-            sdram_access_cmd <= 0;
-            sdram_inhibit_refresh <= 0;
-
             write_strobe <= 0;
-
             txd_strobe_buf <= 0;
             txd_data_buf <= 0;
-            
-            rxd_strobe_buf <= 0;
-            rxd_data_buf <= 0;
-            
-            led <= 0;
-            log_ack <= 0;
-            
-            spi_writing <= 0;
-            spi_write_ack <= 0;
-            spi_cmd_write_buf <= 0;
-            spi_write_done <= 0;
-            
-            spi_write_buf_strobe_buf <= 0;
-            spi_write_buf_ack <= 0;
-            
-            write_buffer <= 0;
-
-            for (i = 0; i < 256; i = i + 1)
-                i_spi_write_data[i][8] <= 0;
         end
         else begin
             txd_strobe_buf <= 0;
-            txd_strobe <= txd_strobe_buf;
-            txd_data <= txd_data_buf;
-            
-            rxd_strobe_buf <= rxd_strobe;
-            rxd_data_buf <= rxd_data;
-            
-            sdram_access_addr <= {addr, 2'b0};
-            sdram_write_buffer <= write_buffer;
-            sdram_inhibit_refresh <= 0;
-    
-            if (sdram_access_cmd)
-                sdram_access_cmd <= 0;
-                
-            spi_csel_buf <= {spi_csel_buf[0], spi_csel};
-            heartbeat <= heartbeat + 1;
 
-            led[7] <= !spi_reset && !spi_csel_buf[1];  // SPI active
-            led[6] <= sdram_cmd_busy;
-            led[5] <= spi_writing;
-            led[4] <= spi_reset;                        // Shows spi_reset state (HIGH = reset active)
-            led[3] <= !spi_csel_buf[1];                 // Shows CS state (lit when CS low)
-            led[0] <= heartbeat[25];                    // Heartbeat - should blink ~2Hz at 132MHz
-            
-            // Log strobe handling
+            // Log output (directly to TX)
             if (log_strobe_buf[1] && !log_ack) begin
                 txd_strobe_buf <= 1;
                 txd_data_buf <= log_val;
-                log_ack <= 1;
             end
-            if (!log_strobe_buf[1]) log_ack <= 0;
-                
-            // SPI write buffer handling - use 2-stage sync for strobe like original
-            // Data signals (offset, val) are stable by the time strobe is detected
-            // because the SPI clock domain holds them for the entire byte period
-            spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
-            
-            if (!spi_write_buf_strobe_buf[1])
-                spi_write_buf_ack <= 0;
-                
-            if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
-                // Store data in buffer for page program operations
-                // Data signals are stable - held by SPI domain until strobe clears
-                i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
-                spi_write_buf_ack <= 1;
+
+            // Serial protocol only when SPI inactive
+            if (!serial_active) begin
+                // SPI is active, do nothing
             end
-            
-            // SPI write command handling    
-            spi_cmd_write_buf <= {spi_cmd_write_buf[0], spi_cmd_write};
-            
-            if (!spi_cmd_write_buf[1])
-                spi_write_ack <= 0;
-
-            if (spi_cmd_write_buf[1] && !spi_write_ack && spi_csel_buf[1]) begin
-                spi_writing <= 1;
-                spi_write_ack <= 1;
-                
-                i_spi_write_type <= spi_write_type;
-                i_spi_write_state <= spi_write_type ? 3 : 0;
-                
-                addr <= spi_write_addr;
-                i_spi_len <= spi_write_len;
-                spi_write_done <= 0;
-                
-                if (spi_write_type)
-                    write_buffer <= 64'hFFFFFFFFFFFFFFFF;
-            end
-            
-            // SPI write state machine
-            if (spi_writing && !sdram_busy) begin
-                if (i_spi_write_state == 0) begin
-                    // Activate for read
-                    sdram_access_cmd <= 2'b11;
-                    
-                    // Prepare data from page buffer
-                    // addr[4:0] is burst number within page (0-31)
-                    // Each burst covers 8 bytes: burst N covers bytes N*8 to N*8+7
-                    for (i = 0; i < 8; i = i + 1) begin
-                        write_buffer[i*8 +: 8] <= i_spi_write_data[{addr[4:0], 3'b000} + i][7:0];
-                        write_mask[i] <= i_spi_write_data[{addr[4:0], 3'b000} + i][8];
-                        i_spi_write_data[{addr[4:0], 3'b000} + i][8] <= 0;
-                    end
-
-                    i_spi_write_state <= 1;
-                end
-                else if (i_spi_write_state == 1) begin
-                    // Read
-                    sdram_access_cmd <= 2'b01;
-                    i_spi_write_state <= 2;
-                end
-                else if (i_spi_write_state == 2) begin
-                    // Modify
-                    for (i = 0; i < 8; i = i + 1) begin
-                        if (!write_mask[i])
-                            write_buffer[i*8 +: 8] <= sdram_read_buffer[i*8 +: 8];
-                    end
-                    i_spi_write_state <= 3;
-                end
-                
-                
-                if (i_spi_write_state == 3) begin
-                    // Activate for write
-                    sdram_access_cmd <= 2'b11;
-                    i_spi_write_state <= 4;
-                end
-                else if (i_spi_write_state == 4) begin
-                    // Write
-                    sdram_access_cmd <= 2'b10;
-                    i_spi_write_state <= 5;
-                end
-                else if (i_spi_write_state == 5) begin
-                    if (i_spi_len == 0) begin
-                        // Finished
-                        spi_writing <= 0;
-                        spi_write_done <= 1;
-                    end
-                    else begin
-                        // Prepare for next burst
-                        i_spi_write_state <= spi_write_type ? 3 : 0;
-                        addr <= addr + 1;
-                        i_spi_len <= i_spi_len - 1;
-                    end
-                end
-            end
-            
-            // Serial protocol handling
-            if (spi_reset || spi_csel_buf[1]) begin
-                
-                if (rxd_strobe_buf) begin
-
-                    if (in_count == 0) begin
-                        if (rxd_data_buf == CMD_VERSION) begin
-                            txd_strobe_buf <= 1;
-                            txd_data_buf <= VERSION;
-                            in_count <= 0;
-                        end
-                        else if (rxd_data_buf == CMD_RAMREAD ||
-                                 rxd_data_buf == CMD_RAMWRITE) begin
-                            cmd <= rxd_data_buf;
-                            in_count <= 1;
-
-                            read_state <= 0;
-                            read_pos <= 0;
-
-                            write_state <= 0;
-                            write_pos <= 0;
-                        end
-                    end
-                    else begin
-                        if (in_count <= 3) // Input bytes 0..3
-                            addr <= {addr[13:0], rxd_data_buf};
-                        else if (in_count == 4)
-                            len <= rxd_data_buf;
-
-                        if (cmd == CMD_RAMREAD && in_count == 4) begin
-                            read_state <= 1;
-                        end
-                        if (cmd == CMD_RAMWRITE && in_count > 4) begin
-                            write_buffer[write_pos*8 +: 8] <= rxd_data_buf;
-                            
-                            if (write_pos == 7) begin
-                                write_strobe <= 1;
-                            end
-                            write_pos <= write_pos + 1;
-                        end
-
-                        if (in_count <= 4)
-                            in_count <= in_count + 1;
-                    end
-
-                end
-                else begin
-
-                    if (write_strobe && !sdram_busy)
-                        write_state <= 1;
-
-                    if (read_state) begin
-                        if ((read_state == 1) && !sdram_busy) begin
-                            // Activate
-                            sdram_access_cmd <= 2'b11;
-                            read_state <= 2;
-                        end
-                        else if ((read_state == 2) && !sdram_busy) begin
-                            // Read
-                            sdram_access_cmd <= 2'b01;
-                            read_state <= 3;
-                        end
-                        else if ((read_state == 3) && !sdram_busy && txd_ready) begin
-                            txd_strobe_buf <= 1;
-                            txd_data_buf <= sdram_read_buffer[read_pos*8 +: 8];
-
-                            if (read_pos == 7) begin
-                                // End of burst
-                                if (len == 1) begin
-                                    // End of read
-                                    read_state <= 0;
-                                    in_count <= 0;
-                                    cmd <= CMD_NOP;
-                                end
-                                else begin
-                                    // Start next burst
-                                    addr <= addr + 1;
-                                    len <= len - 1;
-                                    read_state <= 1;
-                                    read_pos <= 0;
-                                end
-                            end
-                            else
-                                read_pos <= read_pos + 1;
-                        end
-                    end
-                    else if (write_state) begin
-                        // Commit write to SDRAM
-                        if ((write_state == 1) && !sdram_busy) begin
-                            // Activate
-                            sdram_access_cmd <= 2'b11;
-                            write_strobe <= 0;
-                            write_state <= 2;
-                        end
-                        else if ((write_state == 2) && !sdram_busy) begin
-                            // Write
-                            sdram_access_cmd <= 2'b10;
-                            write_state <= 3;
-                        end
-                        else if ((write_state == 3) && !sdram_busy) begin
-                            if (len == 1) begin
-                                if (txd_ready) begin
-                                    // Finished
-                                    txd_strobe_buf <= 1;
-                                    txd_data_buf <= 8'h01;
-                                    write_state <= 0;
-                                    in_count <= 0;
-                                    cmd <= CMD_NOP;
-                                end
-                            end
-                            else begin
-                                // Prepare for next burst
-                                write_state <= 0;
-                                addr <= addr + 1;
-                                len <= len - 1;
-                            end
-                        end
-                    end
-                end
-            end
+            else if (rxd_strobe_buf)
+                handle_rx_byte();
+            else
+                handle_state_machines();
         end
     end
+
+    // =========================================================================
+    // Task: Handle incoming RX byte
+    // =========================================================================
+    task handle_rx_byte;
+    begin
+        if (in_count == 0) begin
+            // Command byte
+            case (rxd_data_buf)
+                CMD_VERSION: begin
+                    txd_strobe_buf <= 1;
+                    txd_data_buf <= VERSION;
+                end
+                CMD_RAMREAD, CMD_RAMWRITE: begin
+                    cmd <= rxd_data_buf;
+                    in_count <= 1;
+                    read_state <= SERIAL_ST_IDLE;
+                    read_pos <= 0;
+                    write_state <= SERIAL_ST_IDLE;
+                    write_pos <= 0;
+                end
+            endcase
+        end
+        else begin
+            // Parameter bytes
+            if (in_count <= 3)
+                addr <= {addr[13:0], rxd_data_buf};
+            else if (in_count == 4)
+                len <= rxd_data_buf;
+
+            if (cmd == CMD_RAMREAD && in_count == 4)
+                read_state <= SERIAL_ST_ACTIVATE;
+
+            if (cmd == CMD_RAMWRITE && in_count > 4) begin
+                write_buffer[write_pos*8 +: 8] <= rxd_data_buf;
+                if (write_pos == 7)
+                    write_strobe <= 1;
+                write_pos <= write_pos + 1;
+            end
+
+            if (in_count <= 4)
+                in_count <= in_count + 1;
+        end
+    end
+    endtask
+
+    // =========================================================================
+    // Task: Handle SDRAM read/write state machines
+    // =========================================================================
+    task handle_state_machines;
+    begin
+        if (write_strobe && !sdram_busy)
+            write_state <= SERIAL_ST_ACTIVATE;
+
+        // RAMREAD state machine
+        case (read_state)
+            SERIAL_ST_ACTIVATE: if (!sdram_busy) begin
+                sdram_access_cmd <= 2'b11;
+                read_state <= SERIAL_ST_COMMAND;
+            end
+
+            SERIAL_ST_COMMAND: if (!sdram_busy) begin
+                sdram_access_cmd <= 2'b01;
+                read_state <= SERIAL_ST_DATA;
+            end
+
+            SERIAL_ST_DATA: if (!sdram_busy && txd_ready) begin
+                txd_strobe_buf <= 1;
+                txd_data_buf <= sdram_read_buffer[read_pos*8 +: 8];
+
+                if (read_pos == 7)
+                    finish_read_burst();
+                else
+                    read_pos <= read_pos + 1;
+            end
+        endcase
+
+        // RAMWRITE state machine
+        case (write_state)
+            SERIAL_ST_ACTIVATE: if (!sdram_busy) begin
+                sdram_access_cmd <= 2'b11;
+                write_strobe <= 0;
+                write_state <= SERIAL_ST_COMMAND;
+            end
+
+            SERIAL_ST_COMMAND: if (!sdram_busy) begin
+                sdram_access_cmd <= 2'b10;
+                write_state <= SERIAL_ST_DATA;
+            end
+
+            SERIAL_ST_DATA: if (!sdram_busy) begin
+                if (len == 1) begin
+                    if (txd_ready)
+                        finish_write_complete();
+                end
+                else
+                    advance_write_burst();
+            end
+        endcase
+    end
+    endtask
+
+    // =========================================================================
+    // Task: Finish read burst (end of 8 bytes)
+    // =========================================================================
+    task finish_read_burst;
+    begin
+        if (len == 1) begin
+            read_state <= SERIAL_ST_IDLE;
+            in_count <= 0;
+            cmd <= CMD_NOP;
+        end
+        else begin
+            addr <= addr + 1;
+            len <= len - 1;
+            read_state <= SERIAL_ST_ACTIVATE;
+            read_pos <= 0;
+        end
+    end
+    endtask
+
+    // =========================================================================
+    // Task: Finish write (send ack)
+    // =========================================================================
+    task finish_write_complete;
+    begin
+        txd_strobe_buf <= 1;
+        txd_data_buf <= 8'h01;
+        write_state <= SERIAL_ST_IDLE;
+        in_count <= 0;
+        cmd <= CMD_NOP;
+    end
+    endtask
+
+    // =========================================================================
+    // Task: Advance to next write burst
+    // =========================================================================
+    task advance_write_burst;
+    begin
+        write_state <= SERIAL_ST_IDLE;
+        addr <= addr + 1;
+        len <= len - 1;
+    end
+    endtask
 
 endmodule
