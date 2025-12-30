@@ -98,7 +98,7 @@ module glue(
     
     // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
-    reg [1:0] spi_write_buf_strobe_buf;
+    reg [1:0] spi_write_buf_strobe_buf;  // 2-stage sync like original
     reg spi_write_buf_ack;
     
     integer i;
@@ -177,7 +177,9 @@ module glue(
             end
             if (!log_strobe_buf[1]) log_ack <= 0;
                 
-            // SPI write buffer handling    
+            // SPI write buffer handling - use 2-stage sync for strobe like original
+            // Data signals (offset, val) are stable by the time strobe is detected
+            // because the SPI clock domain holds them for the entire byte period
             spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
             
             if (!spi_write_buf_strobe_buf[1])
@@ -185,6 +187,7 @@ module glue(
                 
             if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
                 // Store data in buffer for page program operations
+                // Data signals are stable - held by SPI domain until strobe clears
                 i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
                 spi_write_buf_ack <= 1;
             end
@@ -237,15 +240,6 @@ module glue(
                 else if (i_spi_write_state == 1) begin
                     // Read
                     sdram_access_cmd <= 2'b01;
-                    i_spi_write_state <= 6;  // Go to wait state
-                end
-                else if (i_spi_write_state == 6) begin
-                    // Wait for read to complete
-                    if (!sdram_read_busy)
-                        i_spi_write_state <= 7;  // Extra wait cycle for data stability
-                end
-                else if (i_spi_write_state == 7) begin
-                    // Extra wait cycle - ensure read_buffer is stable
                     i_spi_write_state <= 2;
                 end
                 else if (i_spi_write_state == 2) begin
