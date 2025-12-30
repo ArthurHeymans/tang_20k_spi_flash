@@ -257,7 +257,7 @@ module glue(
                     i_spi_write_state <= 3;
                 end
                 
-                if (i_spi_write_state == 3) begin
+                else if (i_spi_write_state == 3) begin
                     // Activate for write
                     sdram_access_cmd <= 2'b11;
                     i_spi_write_state <= 4;
