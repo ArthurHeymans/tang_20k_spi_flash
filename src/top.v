@@ -184,7 +184,7 @@ module top #(
     wire [21:0] spi_ram_addr;
     
     wire spi_write_cmd;
-    wire [1:0] spi_write_type;  // 0=page program, 1=sector/block erase, 2=chip erase
+    wire spi_write_type;  // 0=page program, 1=sector/block erase
     wire [21:0] spi_write_addr;
     wire [12:0] spi_write_len;
     wire spi_write_done;

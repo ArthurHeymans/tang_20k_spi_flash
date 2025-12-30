@@ -36,7 +36,7 @@ module spi_trx #(
     
     // For writing
     output reg write_cmd,
-    output reg [1:0] write_type,  // 0=page program, 1=sector/block erase, 2=chip erase
+    output reg write_type,  // 0=page program, 1=sector/block erase
     output reg [21:0] write_addr,
     output reg [12:0] write_len,
     input wire write_done,
@@ -53,26 +53,38 @@ module spi_trx #(
     
     assign spi_active = is_selected;
     
-    // Reset detection using async set flip-flops
-    // These detect CS/power changes while SPI clock is idle
-    reg reset_cs = 1;
-    reg reset_power = 1;
+    // Reset detection using Gowin DFFPE primitives
+    // The issue is that we run off the SPI clock, but CS/power transitions
+    // typically happen while the SPI clock is idle (no edges).
+    // Using hardware flip-flops with async preset allows us to reliably detect them.
+    //
+    // DFFPE: D flip-flop with async preset and clock enable
+    // - When PRESET goes high, Q is asynchronously set to 1
+    // - When CE is high and rising edge of CLK, Q <= D
+    // - D is tied to 0, so on each clock edge (when enabled), Q tries to go to 0
+    // - PRESET is active when chip is deselected, keeping Q=1
+    // - When chip becomes selected, PRESET goes low, and next clock edge clears Q
     
-    // CS reset detection - async preset when CS high, cleared on first clock when selected
-    always @(posedge spi_clk or posedge spi_csel) begin
-        if (spi_csel)
-            reset_cs <= 1;
-        else if (is_selected)
-            reset_cs <= 0;
-    end
+    wire reset_cs;
+    wire reset_power;
     
-    // Power reset detection - async preset on power reset, cleared on first clock when selected  
-    always @(posedge spi_clk or posedge spi_reset) begin
-        if (spi_reset)
-            reset_power <= 1;
-        else if (is_selected)
-            reset_power <= 0;
-    end
+    // CS reset detection: preset when deselected, clear on first clock when selected
+    DFFPE reset_cs_ff (
+        .Q(reset_cs),
+        .D(1'b0),
+        .CLK(spi_clk),
+        .CE(is_selected),
+        .PRESET(!is_selected)
+    );
+    
+    // Power reset detection: preset on power reset, clear on first clock when selected
+    DFFPE reset_power_ff (
+        .Q(reset_power),
+        .D(1'b0),
+        .CLK(spi_clk),
+        .CE(is_selected),
+        .PRESET(spi_reset)
+    );
 
     reg [2:0] bit_count_in;
     reg [7:0] mosi_byte;
@@ -274,19 +286,6 @@ module spi_trx #(
                         end
                     end
                     
-                    CMD_CHIPERASE1,
-                    CMD_CHIPERASE2: begin
-                        if (status_reg[1]) begin
-                            state <= STA_ERASE;
-                            write_cmd <= 1;
-                            write_type <= 2'd2;   // Chip erase
-                            write_addr <= 22'b0;  // Start at address 0
-                            write_len <= 13'h0;   // Not used for chip erase
-                            status_reg[1] <= 0;   // Reset write enable
-                            status_reg[0] <= 1;   // Write in progress
-                        end
-                    end
-                    
                     CMD_PAGEPROGRAM: begin
                         if (status_reg[1]) begin
                             state <= STA_ADDR_WRITE;
@@ -414,18 +413,12 @@ module spi_trx #(
                     if (addr_count == 0) begin
                         state <= STA_ERASE;
                         write_cmd <= 1;
-                        write_type <= 2'd1;  // Sector/block erase
+                        write_type <= 1;
                         
-                        // Align address based on erase size (write_len in 8-byte units):
-                        //   4KB  = 0x01FF (512 units)  -> align to 12 bits (addr[24:12])
-                        //   32KB = 0x0FFF (4096 units) -> align to 15 bits (addr[24:15])
-                        //   64KB = 0x1FFF (8192 units) -> align to 16 bits (addr[24:16])
-                        if (write_len == 13'h1FFF)
-                            write_addr <= {addr[24:16], 13'b0};  // 64KB aligned
-                        else if (write_len == 13'h0FFF)
-                            write_addr <= {addr[24:15], 12'b0};  // 32KB aligned
+                        if (write_len[12])
+                            write_addr <= {addr[24:16], 13'b0};
                         else
-                            write_addr <= {addr[24:12], 9'b0};   // 4KB aligned
+                            write_addr <= {addr[24:12], 9'b0};
                             
                         status_reg[1] <= 0; // Reset write enable
                         status_reg[0] <= 1; // Write in progress

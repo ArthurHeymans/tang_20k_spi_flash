@@ -47,20 +47,26 @@ IO_PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8;
 // ============================================================
 
 // SPI Chip Select (active low) - Pin 73
+// Added HYSTERESIS=ON for better noise immunity
 IO_LOC "spi_cs_pin" 73;
-IO_PORT "spi_cs_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "spi_cs_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP HYSTERESIS=ON;
 
 // SPI Clock - Pin 74
+// Added HYSTERESIS=ON for clean clock edges
+// Added BUFG for global clock routing
 IO_LOC "spi_clk_pin" 74;
-IO_PORT "spi_clk_pin" IO_TYPE=LVCMOS33;
+IO_PORT "spi_clk_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP HYSTERESIS=ON;
+CLOCK_LOC "spi_clk_pin" BUFG;
 
 // SPI MOSI (Master Out Slave In) - Pin 75
+// Added HYSTERESIS=ON for better noise immunity during long page writes
+// Added PULL_MODE=UP to prevent floating input
 IO_LOC "spi_mosi_pin" 75;
-IO_PORT "spi_mosi_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "spi_mosi_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP HYSTERESIS=ON;
 
 // SPI MISO (Master In Slave Out) - Pin 76
 IO_LOC "spi_miso_pin" 76;
-IO_PORT "spi_miso_pin" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_PORT "spi_miso_pin" IO_TYPE=LVCMOS33 DRIVE=8 SLEW_RATE=FAST;
 
 // SPI Power Detection (active high when SPI master is powered) - Pin 77
 IO_LOC "spi_power_pin" 77;
