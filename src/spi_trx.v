@@ -41,7 +41,7 @@ module spi_trx #(
     output reg [12:0] write_len,
     input wire write_done,
     
-    output reg write_buf_strobe,
+    output reg write_buf_toggle,  // Toggle instead of strobe for reliable CDC
     output reg [7:0] write_buf_offset,
     output reg [7:0] write_buf_val,
     
@@ -172,7 +172,7 @@ module spi_trx #(
                 write_cmd <= 0;
                 write_done_buf <= 0;
                 
-                write_buf_strobe <= 0;
+                write_buf_toggle <= 0;
                 
                 if (reset_power) begin
                     // If we received a power reset, reset some internal registers
@@ -189,8 +189,8 @@ module spi_trx #(
                 write_done_buf <= {write_done_buf[0], write_done};
                 if (status_reg[0] && write_done_buf[1])
                     status_reg[0] <= 0;
-                    
-                write_buf_strobe <= 0;
+                
+                // Note: write_buf_toggle is NOT cleared here - it's a toggle signal
                 
                 // Sample MOSI, advance bit count
                 mosi_byte[bit_count_in] <= spi_mosi;
@@ -464,7 +464,7 @@ module spi_trx #(
                 end
                 else if ((state == STA_WRITE) && (bit_count_in == 0)) begin
                     // Incoming data for write command
-                    write_buf_strobe <= 1;
+                    write_buf_toggle <= ~write_buf_toggle;  // Toggle for reliable CDC
                     write_buf_offset <= addr[7:0];
                     write_buf_val <= {mosi_byte[7:1], spi_mosi};
                     

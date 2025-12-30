@@ -189,7 +189,7 @@ module top #(
     wire [12:0] spi_write_len;
     wire spi_write_done;
     
-    wire spi_write_buf_strobe;
+    wire spi_write_buf_toggle;
     wire [7:0] spi_write_buf_offset;
     wire [7:0] spi_write_buf_val;
     
@@ -225,7 +225,7 @@ module top #(
         .write_len(spi_write_len),
         .write_done(spi_write_done),
         
-        .write_buf_strobe(spi_write_buf_strobe),
+        .write_buf_toggle(spi_write_buf_toggle),
         .write_buf_offset(spi_write_buf_offset),
         .write_buf_val(spi_write_buf_val),
         
@@ -344,7 +344,7 @@ module top #(
         .spi_write_len(spi_write_len),
         .spi_write_done(spi_write_done),
         
-        .spi_write_buf_strobe(spi_write_buf_strobe),
+        .spi_write_buf_toggle(spi_write_buf_toggle),
         .spi_write_buf_offset(spi_write_buf_offset),
         .spi_write_buf_val(spi_write_buf_val),
         

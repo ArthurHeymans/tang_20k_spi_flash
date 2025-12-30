@@ -35,7 +35,7 @@ module glue(
     input wire [12:0] spi_write_len,
     output reg spi_write_done,
     
-    input wire spi_write_buf_strobe,
+    input wire spi_write_buf_toggle,
     input wire [7:0] spi_write_buf_offset,
     input wire [7:0] spi_write_buf_val,
     
@@ -98,8 +98,8 @@ module glue(
     
     // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
-    reg [1:0] spi_write_buf_strobe_buf;  // 2-stage sync like original
-    reg spi_write_buf_ack;
+    reg [2:0] spi_write_buf_toggle_sync;  // 3-stage sync for toggle signal
+    // Edge detect: XOR of stages 2 and 1 detects when toggle changed
     
     integer i;
 
@@ -136,8 +136,7 @@ module glue(
             spi_write_done <= 0;
             i_chip_erase_count <= 0;
             
-            spi_write_buf_strobe_buf <= 0;
-            spi_write_buf_ack <= 0;
+            spi_write_buf_toggle_sync <= 0;
             
             write_buffer <= 0;
 
@@ -177,19 +176,17 @@ module glue(
             end
             if (!log_strobe_buf[1]) log_ack <= 0;
                 
-            // SPI write buffer handling - use 2-stage sync for strobe like original
-            // Data signals (offset, val) are stable by the time strobe is detected
-            // because the SPI clock domain holds them for the entire byte period
-            spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
+            // SPI write buffer handling - use toggle synchronizer for reliable CDC
+            // Toggle signal changes once per byte; we detect edges after sync
+            // Data signals (offset, val) are stable by the time toggle edge is detected
+            // because the SPI clock domain holds them for the entire byte period (~8 SPI clocks)
+            spi_write_buf_toggle_sync <= {spi_write_buf_toggle_sync[1:0], spi_write_buf_toggle};
             
-            if (!spi_write_buf_strobe_buf[1])
-                spi_write_buf_ack <= 0;
-                
-            if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
+            // Detect toggle edge: when sync stage 2 differs from sync stage 1
+            // This means a new byte arrived (toggle changed)
+            if (spi_write_buf_toggle_sync[2] != spi_write_buf_toggle_sync[1]) begin
                 // Store data in buffer for page program operations
-                // Data signals are stable - held by SPI domain until strobe clears
                 i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
-                spi_write_buf_ack <= 1;
             end
             
             // SPI write command handling    
