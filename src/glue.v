@@ -35,9 +35,9 @@ module glue(
     input wire [12:0] spi_write_len,
     output reg spi_write_done,
     
-    input wire spi_write_buf_toggle,
-    input wire [7:0] spi_write_buf_offset,
-    input wire [7:0] spi_write_buf_val,
+    // Page program buffer - directly read from spi_trx when CS is high (no CDC needed)
+    input wire [2047:0] spi_page_buf_data,  // 256 bytes packed
+    input wire [255:0] spi_page_buf_written,
     
     input wire log_strobe,
     input wire [7:0] log_val,
@@ -96,10 +96,8 @@ module glue(
     reg [12:0] i_spi_len;
     reg [19:0] i_chip_erase_count;  // Counter for chip erase (8MB = 1M x 8-byte units = 20 bits)
     
-    // Page program buffer (256 bytes + write flags)
-    reg [8:0] i_spi_write_data [0:255];
-    reg [2:0] spi_write_buf_toggle_sync;  // 3-stage sync for toggle signal
-    // Edge detect: XOR of stages 2 and 1 detects when toggle changed
+    // Local copy of page buffer flags for tracking which bursts still need processing
+    reg [255:0] page_buf_pending;
     
     integer i;
 
@@ -136,12 +134,8 @@ module glue(
             spi_write_done <= 0;
             i_chip_erase_count <= 0;
             
-            spi_write_buf_toggle_sync <= 0;
-            
             write_buffer <= 0;
-
-            for (i = 0; i < 256; i = i + 1)
-                i_spi_write_data[i][8] <= 0;
+            page_buf_pending <= 0;
         end
         else begin
             txd_strobe_buf <= 0;
@@ -175,19 +169,6 @@ module glue(
                 log_ack <= 1;
             end
             if (!log_strobe_buf[1]) log_ack <= 0;
-                
-            // SPI write buffer handling - use toggle synchronizer for reliable CDC
-            // Toggle signal changes once per byte; we detect edges after sync
-            // Data signals (offset, val) are stable by the time toggle edge is detected
-            // because the SPI clock domain holds them for the entire byte period (~8 SPI clocks)
-            spi_write_buf_toggle_sync <= {spi_write_buf_toggle_sync[1:0], spi_write_buf_toggle};
-            
-            // Detect toggle edge: when sync stage 2 differs from sync stage 1
-            // This means a new byte arrived (toggle changed)
-            if (spi_write_buf_toggle_sync[2] != spi_write_buf_toggle_sync[1]) begin
-                // Store data in buffer for page program operations
-                i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
-            end
             
             // SPI write command handling    
             spi_cmd_write_buf <= {spi_cmd_write_buf[0], spi_cmd_write};
@@ -208,6 +189,11 @@ module glue(
                 i_spi_len <= spi_write_len;
                 spi_write_done <= 0;
                 
+                // For page program, copy the written flags from SPI domain
+                // Safe because CS is high (spi_csel_buf[1] == 1), so SPI is idle
+                if (spi_write_type == 0)
+                    page_buf_pending <= spi_page_buf_written;
+                
                 // For chip erase, set up counter for full 8MB
                 // 8MB = 0x800000 bytes = 0x100000 8-byte units = 1048576 units
                 if (spi_write_type == 2'd2)
@@ -223,13 +209,17 @@ module glue(
                     // Activate for read
                     sdram_access_cmd <= 2'b11;
                     
-                    // Prepare data from page buffer
+                    // Prepare data from page buffer (read directly from SPI domain buffer - safe because CS is high)
                     // addr[4:0] is burst number within page (0-31)
                     // Each burst covers 8 bytes: burst N covers bytes N*8 to N*8+7
+                    // Byte index = {addr[4:0], 3'b000} + i = addr[4:0]*8 + i
                     for (i = 0; i < 8; i = i + 1) begin
-                        write_buffer[i*8 +: 8] <= i_spi_write_data[{addr[4:0], 3'b000} + i][7:0];
-                        write_mask[i] <= i_spi_write_data[{addr[4:0], 3'b000} + i][8];
-                        i_spi_write_data[{addr[4:0], 3'b000} + i][8] <= 0;
+                        write_buffer[i*8 +: 8] <= spi_page_buf_data[({addr[4:0], 3'b000} + i)*8 +: 8];
+                        write_mask[i] <= page_buf_pending[{addr[4:0], 3'b000} + i];
+                    end
+                    // Clear pending flags for this burst
+                    for (i = 0; i < 8; i = i + 1) begin
+                        page_buf_pending[{addr[4:0], 3'b000} + i] <= 1'b0;
                     end
 
                     i_spi_write_state <= 1;

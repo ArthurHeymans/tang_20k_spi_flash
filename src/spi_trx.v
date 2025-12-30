@@ -34,16 +34,17 @@ module spi_trx #(
     input wire [63:0] ram_read_buffer,
     input wire ram_read_busy,
     
-    // For writing
+    // For writing (directly accessed by glue - no CDC needed, glue reads when CS high)
     output reg write_cmd,
     output reg [1:0] write_type,  // 0=page program, 1=sector/block erase, 2=chip erase
     output reg [21:0] write_addr,
     output reg [12:0] write_len,
     input wire write_done,
     
-    output reg write_buf_toggle,  // Toggle instead of strobe for reliable CDC
-    output reg [7:0] write_buf_offset,
-    output reg [7:0] write_buf_val,
+    // Page program buffer - directly read by glue.v when CS is high (no CDC crossing)
+    // 256 bytes packed as 2048 bits (256 x 8)
+    output reg [2047:0] page_buf_data,
+    output reg [255:0] page_buf_written,  // Bit per byte: 1 = byte was written by SPI master
     
     output reg log_strobe = 0,
     output reg [7:0] log_val = 0
@@ -172,8 +173,6 @@ module spi_trx #(
                 write_cmd <= 0;
                 write_done_buf <= 0;
                 
-                write_buf_toggle <= 0;
-                
                 if (reset_power) begin
                     // If we received a power reset, reset some internal registers
                     status_reg[1:0] <= 2'b00;
@@ -189,8 +188,6 @@ module spi_trx #(
                 write_done_buf <= {write_done_buf[0], write_done};
                 if (status_reg[0] && write_done_buf[1])
                     status_reg[0] <= 0;
-                
-                // Note: write_buf_toggle is NOT cleared here - it's a toggle signal
                 
                 // Sample MOSI, advance bit count
                 mosi_byte[bit_count_in] <= spi_mosi;
@@ -291,7 +288,8 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_WRITE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h1F; // 256 byte page
+                            write_len <= 13'h1F; // 256 byte page (32 x 8-byte bursts)
+                            page_buf_written <= 256'b0;  // Clear all write flags
                         end
                     end
                     
@@ -463,10 +461,10 @@ module spi_trx #(
                     end
                 end
                 else if ((state == STA_WRITE) && (bit_count_in == 0)) begin
-                    // Incoming data for write command
-                    write_buf_toggle <= ~write_buf_toggle;  // Toggle for reliable CDC
-                    write_buf_offset <= addr[7:0];
-                    write_buf_val <= {mosi_byte[7:1], spi_mosi};
+                    // Incoming data for write command - store directly in page buffer
+                    // No CDC needed: glue.v only reads this buffer after CS goes high
+                    page_buf_data[addr[7:0]*8 +: 8] <= {mosi_byte[7:1], spi_mosi};
+                    page_buf_written[addr[7:0]] <= 1'b1;
                     
                     addr[7:0] <= addr[7:0] + 1;
                 end

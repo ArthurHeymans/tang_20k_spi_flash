@@ -56,7 +56,7 @@ IO_PORT "spi_clk_pin" IO_TYPE=LVCMOS33;
 
 // SPI MOSI (Master Out Slave In) - Pin 75
 IO_LOC "spi_mosi_pin" 75;
-IO_PORT "spi_mosi_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "spi_mosi_pin" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 
 // SPI MISO (Master In Slave Out) - Pin 76
 IO_LOC "spi_miso_pin" 76;
