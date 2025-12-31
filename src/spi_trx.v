@@ -140,17 +140,24 @@ module spi_trx #(
     // bit0 = write in progress
     reg [7:0] status_reg = 8'b00000000;
     
-    reg [1:0] write_done_buf;
+    // Synchronize write_done from system clock domain
+    // This must run on system clock since spi_clk stops when CS is high
+    reg [2:0] write_done_sync;
+    
+    always @(posedge clk) begin
+        write_done_sync <= {write_done_sync[1:0], write_done};
+    end
+    
+    // write_done_sync[2] is stable for sampling by spi_clk domain
+    wire write_busy_clr = write_done_sync[2];
 
     // Main SPI state machine - runs on positive edge of SPI clock
     always @(posedge spi_clk) begin
         if (is_selected) begin
             fresh_read <= 0;
             
-            // Always update write_done synchronizer and clear busy when done
-            // This must happen even during reset/command phase so status is correct
-            write_done_buf <= {write_done_buf[0], write_done};
-            if (status_reg[0] && write_done_buf[1])
+            // Clear write-in-progress when write_done is synchronized
+            if (status_reg[0] && write_busy_clr)
                 status_reg[0] <= 0;
             
             if (reset_cs || reset_power) begin
@@ -255,7 +262,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 20'h001FF; // 4KB sector (512 x 8-byte units)
+                            write_len <= 20'h001FF; // 4KB sector (512 x 8-byte units, minus 1)
                         end
                     end
                     
@@ -263,7 +270,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 20'h00FFF; // 32KB block (4096 x 8-byte units)
+                            write_len <= 20'h00FFF; // 32KB block (4096 x 8-byte units, minus 1)
                         end
                     end
                     
@@ -271,7 +278,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 20'h01FFF; // 64KB block (8192 x 8-byte units)
+                            write_len <= 20'h01FFF; // 64KB block (8192 x 8-byte units, minus 1)
                         end
                     end
                     
@@ -282,7 +289,7 @@ module spi_trx #(
                             write_cmd <= 1;
                             write_type <= 1'd1;   // Erase
                             write_addr <= 22'b0;  // Start at address 0
-                            write_len <= 20'hFFFFF; // 8MB (1M x 8-byte units)
+                            write_len <= 20'hFFFFF; // 8MB (1M x 8-byte units, minus 1)
                             status_reg[1] <= 0;   // Reset write enable
                             status_reg[0] <= 1;   // Write in progress
                         end
@@ -292,7 +299,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_WRITE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 20'h0001F; // 256 byte page (32 x 8-byte units)
+                            write_len <= 20'h0001F; // 256 byte page (32 x 8-byte units, minus 1)
                         end
                     end
                     

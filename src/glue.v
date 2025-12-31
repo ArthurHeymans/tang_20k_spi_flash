@@ -252,20 +252,26 @@ module glue(
                 else if (i_spi_write_state == 4) begin
                     // Write
                     sdram_access_cmd <= 2'b10;
-                    i_spi_write_state <= 5;
-                end
-                else if (i_spi_write_state == 5) begin
+                    
                     if (i_spi_len == 0) begin
-                        // Finished erase or page program
-                        spi_writing <= 0;
-                        spi_write_done <= 1;
+                        // Last burst - go to completion state
+                        i_spi_write_state <= 6;
                     end
                     else begin
-                        // Prepare for next burst
-                        i_spi_write_state <= (i_spi_write_type != 0) ? 3 : 0;
-                        addr <= addr + 1;
-                        i_spi_len <= i_spi_len - 1;
+                        // More bursts remaining
+                        i_spi_write_state <= 5;
                     end
+                end
+                else if (i_spi_write_state == 5) begin
+                    // Prepare for next burst
+                    i_spi_write_state <= (i_spi_write_type != 0) ? 3 : 0;
+                    addr <= addr + 1;
+                    i_spi_len <= i_spi_len - 1;
+                end
+                else if (i_spi_write_state == 6) begin
+                    // Wait for SDRAM to finish final write before signaling done
+                    spi_writing <= 0;
+                    spi_write_done <= 1;
                 end
             end
             
