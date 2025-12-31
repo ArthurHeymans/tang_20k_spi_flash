@@ -233,15 +233,6 @@ module glue(
                 else if (i_spi_write_state == 1) begin
                     // Read
                     sdram_access_cmd <= 2'b01;
-                    i_spi_write_state <= 6;  // Go to wait state
-                end
-                else if (i_spi_write_state == 6) begin
-                    // Wait for read to complete
-                    if (!sdram_read_busy)
-                        i_spi_write_state <= 7;  // Extra wait cycle for data stability
-                end
-                else if (i_spi_write_state == 7) begin
-                    // Extra wait cycle - ensure read_buffer is stable
                     i_spi_write_state <= 2;
                 end
                 else if (i_spi_write_state == 2) begin
