@@ -30,9 +30,9 @@ module glue(
     input wire spi_csel,
     
     input wire spi_cmd_write,
-    input wire [1:0] spi_write_type,  // 0=page program, 1=sector/block erase, 2=chip erase
+    input wire spi_write_type,  // 0=page program, 1=erase (sector/block/chip)
     input wire [21:0] spi_write_addr,
-    input wire [12:0] spi_write_len,
+    input wire [19:0] spi_write_len,
     output reg spi_write_done,
     
     input wire spi_write_buf_strobe,
@@ -91,10 +91,9 @@ module glue(
     reg spi_write_ack;
     reg [1:0] spi_cmd_write_buf;
     
-    reg [1:0] i_spi_write_type;  // 0=page program, 1=sector/block erase, 2=chip erase
+    reg i_spi_write_type;  // 0=page program, 1=erase (sector/block/chip)
     reg [2:0] i_spi_write_state;
-    reg [12:0] i_spi_len;
-    reg [19:0] i_chip_erase_count;  // Counter for chip erase (8MB = 1M x 8-byte units = 20 bits)
+    reg [19:0] i_spi_len;
     
     // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
@@ -134,7 +133,9 @@ module glue(
             spi_write_ack <= 0;
             spi_cmd_write_buf <= 0;
             spi_write_done <= 0;
-            i_chip_erase_count <= 0;
+            i_spi_write_type <= 0;
+            i_spi_write_state <= 0;
+            i_spi_len <= 0;
             
             spi_write_buf_strobe_buf <= 0;
             spi_write_buf_ack <= 0;
@@ -208,11 +209,6 @@ module glue(
                 i_spi_len <= spi_write_len;
                 spi_write_done <= 0;
                 
-                // For chip erase, set up counter for full 8MB
-                // 8MB = 0x800000 bytes = 0x100000 8-byte units = 1048576 units
-                if (spi_write_type == 2'd2)
-                    i_chip_erase_count <= 20'hFFFFF;  // 1M - 1 (will erase 1M units)
-                
                 if (spi_write_type != 0)
                     write_buffer <= 64'hFFFFFFFFFFFFFFFF;
             end
@@ -268,22 +264,8 @@ module glue(
                     i_spi_write_state <= 5;
                 end
                 else if (i_spi_write_state == 5) begin
-                    if (i_spi_write_type == 2'd2) begin
-                        // Chip erase - use separate counter
-                        if (i_chip_erase_count == 0) begin
-                            // Finished chip erase
-                            spi_writing <= 0;
-                            spi_write_done <= 1;
-                        end
-                        else begin
-                            // Continue chip erase
-                            i_spi_write_state <= 3;
-                            addr <= addr + 1;
-                            i_chip_erase_count <= i_chip_erase_count - 1;
-                        end
-                    end
-                    else if (i_spi_len == 0) begin
-                        // Finished sector/block erase or page program
+                    if (i_spi_len == 0) begin
+                        // Finished erase or page program
                         spi_writing <= 0;
                         spi_write_done <= 1;
                     end

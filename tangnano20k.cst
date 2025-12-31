@@ -9,7 +9,7 @@ IO_LOC "clk_27mhz" 4;
 IO_PORT "clk_27mhz" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 
 // ============================================================
-// User LEDs (accent active low)
+// User LEDs (active low)
 // ============================================================
 IO_LOC "led[0]" 15;
 IO_LOC "led[1]" 16;
@@ -46,20 +46,20 @@ IO_PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8;
 // Reference: Tang Nano 20K pinout from Sipeed wiki
 // ============================================================
 
-// SPI Chip Select (active low) - Pin 73
-IO_LOC "spi_cs_pin" 73;
+// SPI Chip Select (active low)
+IO_LOC "spi_cs_pin" 72;
 IO_PORT "spi_cs_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
-// SPI Clock - Pin 74
-IO_LOC "spi_clk_pin" 74;
+// SPI Clock
+IO_LOC "spi_clk_pin" 52;
 IO_PORT "spi_clk_pin" IO_TYPE=LVCMOS33;
 
-// SPI MOSI (Master Out Slave In) - Pin 75
-IO_LOC "spi_mosi_pin" 75;
+// SPI MOSI (Master Out Slave In)
+IO_LOC "spi_mosi_pin" 53;
 IO_PORT "spi_mosi_pin" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
-// SPI MISO (Master In Slave Out) - Pin 76
-IO_LOC "spi_miso_pin" 76;
+// SPI MISO (Master In Slave Out)
+IO_LOC "spi_miso_pin" 71;
 IO_PORT "spi_miso_pin" IO_TYPE=LVCMOS33 DRIVE=8;
 
 // SPI Power Detection (active high when SPI master is powered) - Pin 77
@@ -97,7 +97,7 @@ IO_PORT "O_sdram_ras_n" IO_TYPE=LVCMOS33;
 IO_LOC "O_sdram_wen_n" IOL12B;
 IO_PORT "O_sdram_wen_n" IO_TYPE=LVCMOS33;
 
-// SDRAM Address (directly directly directly)
+// SDRAM Address
 IO_LOC "O_sdram_addr[0]" IOR14A;
 IO_PORT "O_sdram_addr[0]" IO_TYPE=LVCMOS33;
 

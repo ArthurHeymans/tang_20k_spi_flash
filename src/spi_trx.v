@@ -36,9 +36,9 @@ module spi_trx #(
     
     // For writing
     output reg write_cmd,
-    output reg [1:0] write_type,  // 0=page program, 1=sector/block erase, 2=chip erase
+    output reg write_type,  // 0=page program, 1=erase (sector/block/chip)
     output reg [21:0] write_addr,
-    output reg [12:0] write_len,
+    output reg [19:0] write_len,
     input wire write_done,
     
     output reg write_buf_strobe,
@@ -255,7 +255,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h01FF; // 4KB sector (512 x 8-byte units)
+                            write_len <= 20'h001FF; // 4KB sector (512 x 8-byte units)
                         end
                     end
                     
@@ -263,7 +263,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h0FFF; // 32KB block (4096 x 8-byte units)
+                            write_len <= 20'h00FFF; // 32KB block (4096 x 8-byte units)
                         end
                     end
                     
@@ -271,7 +271,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_ERASE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h1FFF; // 64KB block (8192 x 8-byte units)
+                            write_len <= 20'h01FFF; // 64KB block (8192 x 8-byte units)
                         end
                     end
                     
@@ -280,9 +280,9 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ERASE;
                             write_cmd <= 1;
-                            write_type <= 2'd2;   // Chip erase
+                            write_type <= 1'd1;   // Erase
                             write_addr <= 22'b0;  // Start at address 0
-                            write_len <= 13'h0;   // Not used for chip erase
+                            write_len <= 20'hFFFFF; // 8MB (1M x 8-byte units)
                             status_reg[1] <= 0;   // Reset write enable
                             status_reg[0] <= 1;   // Write in progress
                         end
@@ -292,7 +292,7 @@ module spi_trx #(
                         if (status_reg[1]) begin
                             state <= STA_ADDR_WRITE;
                             addr_count <= addr_4byte ? 31 : 23;
-                            write_len <= 13'h1F; // 256 byte page
+                            write_len <= 20'h0001F; // 256 byte page (32 x 8-byte units)
                         end
                     end
                     
@@ -415,15 +415,15 @@ module spi_trx #(
                     if (addr_count == 0) begin
                         state <= STA_ERASE;
                         write_cmd <= 1;
-                        write_type <= 2'd1;  // Sector/block erase
+                        write_type <= 1'd1;  // Erase
                         
                         // Align address based on erase size (write_len in 8-byte units):
-                        //   4KB  = 0x01FF (512 units)  -> align to 12 bits (addr[24:12])
-                        //   32KB = 0x0FFF (4096 units) -> align to 15 bits (addr[24:15])
-                        //   64KB = 0x1FFF (8192 units) -> align to 16 bits (addr[24:16])
-                        if (write_len == 13'h1FFF)
+                        //   4KB  = 0x001FF (512 units)  -> align to 12 bits (addr[24:12])
+                        //   32KB = 0x00FFF (4096 units) -> align to 15 bits (addr[24:15])
+                        //   64KB = 0x01FFF (8192 units) -> align to 16 bits (addr[24:16])
+                        if (write_len == 20'h01FFF)
                             write_addr <= {addr[24:16], 13'b0};  // 64KB aligned
-                        else if (write_len == 13'h0FFF)
+                        else if (write_len == 20'h00FFF)
                             write_addr <= {addr[24:15], 12'b0};  // 32KB aligned
                         else
                             write_addr <= {addr[24:12], 9'b0};   // 4KB aligned
