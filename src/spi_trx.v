@@ -147,6 +147,12 @@ module spi_trx #(
         if (is_selected) begin
             fresh_read <= 0;
             
+            // Always update write_done synchronizer and clear busy when done
+            // This must happen even during reset/command phase so status is correct
+            write_done_buf <= {write_done_buf[0], write_done};
+            if (status_reg[0] && write_done_buf[1])
+                status_reg[0] <= 0;
+            
             if (reset_cs || reset_power) begin
                 // Starting a new command - reinitialize state
                 bit_count_in <= 6;
@@ -170,7 +176,6 @@ module spi_trx #(
                 ram_read <= 0;
                 
                 write_cmd <= 0;
-                write_done_buf <= 0;
                 
                 write_buf_strobe <= 0;
                 
@@ -185,10 +190,6 @@ module spi_trx #(
             end
             else begin
                 log_strobe <= 0;
-                
-                write_done_buf <= {write_done_buf[0], write_done};
-                if (status_reg[0] && write_done_buf[1])
-                    status_reg[0] <= 0;
                     
                 write_buf_strobe <= 0;
                 
