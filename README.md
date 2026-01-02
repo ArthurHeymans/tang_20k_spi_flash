@@ -227,7 +227,7 @@ ser.close()
 | READ4 | 0x13 | Read data (4-byte address) | Micron only |
 | FAST_READ | 0x0B | Fast read with dummy byte | Both |
 | FAST_READ4 | 0x0C | Fast read (4-byte address) | Micron only |
-| READ_ID | 0x9F | Read JEDEC ID | Both |
+| READ_ID | 0x9E/0x9F | Read JEDEC ID | Both |
 | READ_STATUS | 0x05 | Read status register | Both |
 | WRITE_ENABLE | 0x06 | Enable writes | Both |
 | WRITE_DISABLE | 0x04 | Disable writes | Both |
@@ -235,9 +235,18 @@ ser.close()
 | SECTOR_ERASE | 0x20 | Erase 4KB sector | Both |
 | BLOCK_ERASE_32K | 0x52 | Erase 32KB block | Both |
 | BLOCK_ERASE_64K | 0xD8 | Erase 64KB block | Both |
-| CHIP_ERASE | 0xC7/0x60 | Erase entire chip | Both |
+| CHIP_ERASE | 0x60/0xC7 | Erase entire chip | Both |
 | EN4B | 0xB7 | Enter 4-byte address mode | Micron only |
 | EX4B | 0xE9 | Exit 4-byte address mode | Micron only |
+
+### Limitations
+
+- **Page program overwrites entire page**: The current implementation writes all 256 bytes of a page, even if fewer bytes were sent. Partial page programming is not supported.
+- **No flash semantics for page program**: Real flash can only change 1s to 0s during page program (bits must be erased to 1 first). This emulator overwrites bytes unconditionally.
+
+**TODO**:
+- Support partial page program (only write bytes that were actually received)
+- Emulate flash bit semantics (only allow 1→0 transitions during page program, require erase for 0→1)
 
 ## Technical Details
 
