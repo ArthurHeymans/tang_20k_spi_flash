@@ -92,12 +92,12 @@ module glue(
     reg [1:0] spi_cmd_write_buf;
     
     reg i_spi_write_type;  // 0=page program, 1=erase (sector/block/chip)
-    reg [2:0] i_spi_write_state;
+    reg [3:0] i_spi_write_state;
     reg [19:0] i_spi_len;
     
     // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
-    reg [1:0] spi_write_buf_strobe_buf;
+    reg [3:0] spi_write_buf_strobe_buf;
     reg spi_write_buf_ack;
     
     integer i;
@@ -179,12 +179,12 @@ module glue(
             if (!log_strobe_buf[1]) log_ack <= 0;
                 
             // SPI write buffer handling    
-            spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
+            spi_write_buf_strobe_buf <= {  spi_write_buf_strobe_buf[2:0], spi_write_buf_strobe};
             
-            if (!spi_write_buf_strobe_buf[1])
+            if (!spi_write_buf_strobe_buf[3])
                 spi_write_buf_ack <= 0;
                 
-            if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
+            if (spi_write_buf_strobe_buf[3] && !spi_write_buf_ack) begin
                 // Store data in buffer for page program operations
                 i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
                 spi_write_buf_ack <= 1;
@@ -203,7 +203,7 @@ module glue(
                 i_spi_write_type <= spi_write_type;
                 // State 0 = page program read-modify-write start
                 // State 3 = erase direct write start
-                i_spi_write_state <= (spi_write_type != 0) ? 3 : 0;
+                i_spi_write_state <= (spi_write_type != 0) ? 4 : 0;
                 
                 addr <= spi_write_addr;
                 i_spi_len <= spi_write_len;
@@ -216,59 +216,72 @@ module glue(
             // SPI write state machine
             if (spi_writing && !sdram_busy) begin
                 if (i_spi_write_state == 0) begin
-                    // Activate for read
-                    sdram_access_cmd <= 2'b11;
-                    
                     // Prepare data from page buffer
                     // addr[4:0] is burst number within page (0-31)
                     // Each burst covers 8 bytes: burst N covers bytes N*8 to N*8+7
                     for (i = 0; i < 8; i = i + 1) begin
                         write_buffer[i*8 +: 8] <= i_spi_write_data[{addr[4:0], 3'b000} + i][7:0];
-                        write_mask[i] <= i_spi_write_data[{addr[4:0], 3'b000} + i][8];
-                        i_spi_write_data[{addr[4:0], 3'b000} + i][8] <= 0;
                     end
 
-                    i_spi_write_state <= 1;
+                    // Go to wait state to let write_buffer register before SDRAM access
+                    i_spi_write_state <= 10;
+                end
+                else if (i_spi_write_state == 10) begin
+                    // Wait state: write_buffer is now stable, proceed to activate
+                    i_spi_write_state <= 4;
                 end
                 else if (i_spi_write_state == 1) begin
                     // Read
                     sdram_access_cmd <= 2'b01;
+                    i_spi_write_state <= 8;
+                end
+                // busy is cleared one cycle too early according to original code
+                else if (i_spi_write_state == 8) begin
                     i_spi_write_state <= 2;
                 end
                 else if (i_spi_write_state == 2) begin
-                    // Modify
+                    // Modify - wait for read to complete before using sdram_read_buffer
                     for (i = 0; i < 8; i = i + 1) begin
                         if (!write_mask[i])
                             write_buffer[i*8 +: 8] <= sdram_read_buffer[i*8 +: 8];
                     end
                     i_spi_write_state <= 3;
                 end
-                
-                if (i_spi_write_state == 3) begin
-                    // Activate for write
-                    sdram_access_cmd <= 2'b11;
+               // busy is cleared one cycle too early according to original code
+                else if (i_spi_write_state == 3) begin
                     i_spi_write_state <= 4;
                 end
+                
                 else if (i_spi_write_state == 4) begin
+                    // Activate for write
+                    sdram_access_cmd <= 2'b11;
+                    i_spi_write_state <= 5;
+                end
+                else if (i_spi_write_state == 5) begin
                     // Write
                     sdram_access_cmd <= 2'b10;
                     
                     if (i_spi_len == 0) begin
                         // Last burst - go to completion state
-                        i_spi_write_state <= 6;
+                        i_spi_write_state <= 7;
                     end
                     else begin
                         // More bursts remaining
-                        i_spi_write_state <= 5;
+                        i_spi_write_state <= 6;
                     end
                 end
-                else if (i_spi_write_state == 5) begin
+                else if (i_spi_write_state == 6) begin
                     // Prepare for next burst
+                    // Go to state 9 first to let addr update before state 0 uses it
                     i_spi_write_state <= (i_spi_write_type != 0) ? 3 : 0;
                     addr <= addr + 1;
                     i_spi_len <= i_spi_len - 1;
                 end
-                else if (i_spi_write_state == 6) begin
+                else if (i_spi_write_state == 9) begin
+                    // Wait state: addr has now updated, safe to go to state 0
+                    i_spi_write_state <= 0;
+                end
+                else if (i_spi_write_state == 7) begin
                     // Wait for SDRAM to finish final write before signaling done
                     spi_writing <= 0;
                     spi_write_done <= 1;
