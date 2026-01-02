@@ -97,8 +97,12 @@ module glue(
     
     // Page program buffer (256 bytes + write flags)
     reg [8:0] i_spi_write_data [0:255];
-    reg [3:0] spi_write_buf_strobe_buf;
+    reg [1:0] spi_write_buf_strobe_buf;
     reg spi_write_buf_ack;
+    
+    // Registered copies of write buffer data (captured on strobe rising edge)
+    reg [7:0] spi_write_buf_offset_reg;
+    reg [7:0] spi_write_buf_val_reg;
     
     integer i;
 
@@ -139,6 +143,8 @@ module glue(
             
             spi_write_buf_strobe_buf <= 0;
             spi_write_buf_ack <= 0;
+            spi_write_buf_offset_reg <= 0;
+            spi_write_buf_val_reg <= 0;
             
             write_buffer <= 0;
 
@@ -178,15 +184,23 @@ module glue(
             end
             if (!log_strobe_buf[1]) log_ack <= 0;
                 
-            // SPI write buffer handling    
-            spi_write_buf_strobe_buf <= {  spi_write_buf_strobe_buf[2:0], spi_write_buf_strobe};
+            // SPI write buffer handling
+            // Use 2-stage synchronizer for strobe, capture data on rising edge
+            spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
             
-            if (!spi_write_buf_strobe_buf[3])
+            // Capture data immediately when strobe rises (after 1 sync stage)
+            // Data is stable for entire SPI clock period, so safe to sample here
+            if (spi_write_buf_strobe_buf[0] && !spi_write_buf_strobe_buf[1]) begin
+                spi_write_buf_offset_reg <= spi_write_buf_offset;
+                spi_write_buf_val_reg <= spi_write_buf_val;
+            end
+            
+            if (!spi_write_buf_strobe_buf[1])
                 spi_write_buf_ack <= 0;
                 
-            if (spi_write_buf_strobe_buf[3] && !spi_write_buf_ack) begin
+            if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
                 // Store data in buffer for page program operations
-                i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
+                i_spi_write_data[spi_write_buf_offset_reg] <= {1'b1, spi_write_buf_val_reg};
                 spi_write_buf_ack <= 1;
             end
             
