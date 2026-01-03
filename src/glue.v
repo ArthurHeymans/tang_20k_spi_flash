@@ -41,6 +41,10 @@ module glue(
     output reg  [7:0] led
 );
 
+    // =========================================================================
+    // Constants
+    // =========================================================================
+
     // Serial protocol commands
     localparam CMD_NOP      = 8'h00;
     localparam CMD_VERSION  = 8'h30;
@@ -58,6 +62,10 @@ module glue(
     localparam SPI_PAGE_PROGRAM = 2'd0;
     localparam SPI_SECTOR_ERASE = 2'd1;
     localparam SPI_CHIP_ERASE   = 2'd2;
+
+    // =========================================================================
+    // Registers
+    // =========================================================================
 
     // Serial protocol state
     reg [7:0] cmd;
@@ -111,100 +119,181 @@ module glue(
 
     integer i;
 
-    // Log strobe synchronizer
-    always @(posedge clk)
-        log_strobe_buf <= {log_strobe_buf[0], log_strobe};
+    // =========================================================================
+    // Synchronizers (active even during reset for clean startup)
+    // =========================================================================
+
+    always @(posedge clk) begin
+        log_strobe_buf           <= {log_strobe_buf[0], log_strobe};
+        spi_csel_buf             <= {spi_csel_buf[0], spi_csel};
+        spi_cmd_write_buf        <= {spi_cmd_write_buf[0], spi_cmd_write};
+        spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
+    end
 
     // =========================================================================
-    // Reset and common assignments
+    // Heartbeat counter
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset)
+            heartbeat <= 0;
+        else
+            heartbeat <= heartbeat + 1;
+    end
+
+    // =========================================================================
+    // LED status indicators
     // =========================================================================
 
     always @(posedge clk) begin
         if (reset) begin
-            cmd                      <= CMD_NOP;
-            in_count                 <= 0;
-            addr                     <= 0;
-            len                      <= 0;
-            read_state               <= 0;
-            read_pos                 <= 0;
-            write_state              <= 0;
-            write_pos                <= 0;
-            write_buffer             <= 0;
-            write_strobe             <= 0;
-            sdram_access_cmd         <= 0;
-            sdram_inhibit_refresh    <= 0;
-            txd_strobe_buf           <= 0;
-            txd_data_buf             <= 0;
-            rxd_strobe_buf           <= 0;
-            rxd_data_buf             <= 0;
-            led                      <= 0;
-            log_ack                  <= 0;
-            spi_csel_buf             <= 0;
-            spi_writing              <= 0;
-            spi_write_ack            <= 0;
-            spi_cmd_write_buf        <= 0;
-            spi_write_done           <= 0;
-            spi_write_buf_strobe_buf <= 0;
-            spi_write_buf_ack        <= 0;
-            i_chip_erase_count       <= 0;
-
-            for (i = 0; i < 256; i = i + 1)
-                i_spi_write_data[i][8] <= 0;
+            led <= 0;
         end
         else begin
-            // Default assignments (active every cycle)
-            txd_strobe_buf       <= 0;
-            txd_strobe           <= txd_strobe_buf;
-            txd_data             <= txd_data_buf;
-            rxd_strobe_buf       <= rxd_strobe;
-            rxd_data_buf         <= rxd_data;
-            sdram_access_addr    <= {addr, 2'b0};
-            sdram_write_buffer   <= write_buffer;
-            sdram_inhibit_refresh <= 0;
-            heartbeat            <= heartbeat + 1;
-
-            if (sdram_access_cmd)
-                sdram_access_cmd <= SDRAM_NOP;
-
-            spi_csel_buf <= {spi_csel_buf[0], spi_csel};
-
-            // LED status indicators
             led[7] <= !spi_reset && !spi_csel_buf[1];  // SPI active
             led[6] <= sdram_cmd_busy;
             led[5] <= spi_writing;
             led[4] <= spi_reset;
             led[3] <= !spi_csel_buf[1];                // CS low
+            led[2] <= 0;
+            led[1] <= 0;
             led[0] <= heartbeat[25];                   // ~2Hz heartbeat
+        end
+    end
 
-            // =================================================================
-            // Log strobe handling
-            // =================================================================
+    // =========================================================================
+    // TX output register (one cycle delay for timing)
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset) begin
+            txd_strobe <= 0;
+            txd_data   <= 0;
+        end
+        else begin
+            txd_strobe <= txd_strobe_buf;
+            txd_data   <= txd_data_buf;
+        end
+    end
+
+    // =========================================================================
+    // RX input register
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset) begin
+            rxd_strobe_buf <= 0;
+            rxd_data_buf   <= 0;
+        end
+        else begin
+            rxd_strobe_buf <= rxd_strobe;
+            rxd_data_buf   <= rxd_data;
+        end
+    end
+
+    // =========================================================================
+    // SDRAM output registers
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset) begin
+            sdram_access_addr    <= 0;
+            sdram_write_buffer   <= 0;
+            sdram_inhibit_refresh <= 0;
+        end
+        else begin
+            sdram_access_addr    <= {addr, 2'b0};
+            sdram_write_buffer   <= write_buffer;
+            sdram_inhibit_refresh <= 0;
+        end
+    end
+
+    // =========================================================================
+    // Log strobe handling
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset) begin
+            log_ack <= 0;
+        end
+        else begin
+            if (!log_strobe_buf[1])
+                log_ack <= 0;
+            else if (!log_ack)
+                log_ack <= 1;
+        end
+    end
+
+    // =========================================================================
+    // SPI write buffer ack handling
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset)
+            spi_write_buf_ack <= 0;
+        else if (!spi_write_buf_strobe_buf[1])
+            spi_write_buf_ack <= 0;
+        else if (!spi_write_buf_ack)
+            spi_write_buf_ack <= 1;
+    end
+
+    // =========================================================================
+    // Main state machine
+    // Handles: SDRAM commands, SPI writes, serial protocol
+    // These are coupled through shared registers (addr, write_buffer, sdram_access_cmd)
+    // =========================================================================
+
+    always @(posedge clk) begin
+        if (reset) begin
+            cmd                <= CMD_NOP;
+            in_count           <= 0;
+            addr               <= 0;
+            len                <= 0;
+            read_state         <= 0;
+            read_pos           <= 0;
+            write_state        <= 0;
+            write_pos          <= 0;
+            write_buffer       <= 0;
+            write_mask         <= 0;
+            write_strobe       <= 0;
+            sdram_access_cmd   <= SDRAM_NOP;
+            txd_strobe_buf     <= 0;
+            txd_data_buf       <= 0;
+            spi_writing        <= 0;
+
+            for (i = 0; i < 256; i = i + 1)
+                i_spi_write_data[i] <= 0;
+            spi_write_ack      <= 0;
+            spi_write_done     <= 0;
+            i_spi_write_type   <= 0;
+            i_spi_write_state  <= 0;
+            i_spi_len          <= 0;
+            i_chip_erase_count <= 0;
+        end
+        else begin
+            // Default: clear strobe, auto-clear SDRAM command
+            txd_strobe_buf <= 0;
+
+            if (sdram_access_cmd != SDRAM_NOP)
+                sdram_access_cmd <= SDRAM_NOP;
+
+            // -----------------------------------------------------------------
+            // Log output (directly drives TX when active)
+            // -----------------------------------------------------------------
             if (log_strobe_buf[1] && !log_ack) begin
                 txd_strobe_buf <= 1;
                 txd_data_buf   <= log_val;
-                log_ack        <= 1;
             end
-            if (!log_strobe_buf[1])
-                log_ack <= 0;
 
-            // =================================================================
-            // SPI write buffer handling
-            // =================================================================
-            spi_write_buf_strobe_buf <= {spi_write_buf_strobe_buf[0], spi_write_buf_strobe};
-
-            if (!spi_write_buf_strobe_buf[1])
-                spi_write_buf_ack <= 0;
-
-            if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack) begin
+            // -----------------------------------------------------------------
+            // SPI write buffer capture
+            // -----------------------------------------------------------------
+            if (spi_write_buf_strobe_buf[1] && !spi_write_buf_ack)
                 i_spi_write_data[spi_write_buf_offset] <= {1'b1, spi_write_buf_val};
-                spi_write_buf_ack <= 1;
-            end
 
-            // =================================================================
-            // SPI write command handling
-            // =================================================================
-            spi_cmd_write_buf <= {spi_cmd_write_buf[0], spi_cmd_write};
-
+            // -----------------------------------------------------------------
+            // SPI write command capture
+            // -----------------------------------------------------------------
             if (!spi_cmd_write_buf[1])
                 spi_write_ack <= 0;
 
@@ -216,26 +305,23 @@ module glue(
                 i_spi_len        <= spi_write_len;
                 spi_write_done   <= 0;
 
-                // State 0 = page program (read-modify-write)
-                // State 3 = erase (direct write)
+                // State 0 = page program (read-modify-write), State 3 = erase (direct write)
                 i_spi_write_state <= (spi_write_type != SPI_PAGE_PROGRAM) ? 3 : 0;
 
                 if (spi_write_type == SPI_CHIP_ERASE)
-                    i_chip_erase_count <= 20'hFFFFF;  // 1M units
+                    i_chip_erase_count <= 20'hFFFFF;
 
                 if (spi_write_type != SPI_PAGE_PROGRAM)
                     write_buffer <= 64'hFFFFFFFFFFFFFFFF;
             end
 
-            // =================================================================
+            // -----------------------------------------------------------------
             // SPI write state machine
-            // =================================================================
+            // -----------------------------------------------------------------
             if (spi_writing && !sdram_busy) begin
                 case (i_spi_write_state)
                     3'd0: begin  // Activate for read (page program)
                         sdram_access_cmd <= SDRAM_ACTIVATE;
-                        // Load data from page buffer for this burst
-                        // addr[4:0] = burst number, each covers 8 bytes
                         for (i = 0; i < 8; i = i + 1) begin
                             write_buffer[i*8 +: 8] <= i_spi_write_data[{addr[4:0], 3'b000} + i][7:0];
                             write_mask[i]          <= i_spi_write_data[{addr[4:0], 3'b000} + i][8];
@@ -275,7 +361,7 @@ module glue(
                         i_spi_write_state <= 5;
                     end
 
-                    3'd5: begin  // Check completion / advance to next burst
+                    3'd5: begin  // Check completion / advance
                         if (i_spi_write_type == SPI_CHIP_ERASE) begin
                             if (i_chip_erase_count == 0) begin
                                 spi_writing    <= 0;
@@ -300,14 +386,13 @@ module glue(
                 endcase
             end
 
-            // =================================================================
-            // Serial protocol handling
-            // Only active when SPI is inactive and no SPI write in progress
-            // =================================================================
+            // -----------------------------------------------------------------
+            // Serial protocol (only when SPI inactive)
+            // -----------------------------------------------------------------
             if ((spi_reset || spi_csel_buf[1]) && !spi_writing) begin
 
                 if (rxd_strobe_buf) begin
-                    // Receiving data
+                    // --- Receiving bytes ---
                     if (in_count == 0) begin
                         case (rxd_data_buf)
                             CMD_VERSION: begin
@@ -325,7 +410,6 @@ module glue(
                         endcase
                     end
                     else begin
-                        // Collecting address and length bytes
                         if (in_count <= 3)
                             addr <= {addr[13:0], rxd_data_buf};
                         else if (in_count == 4)
@@ -346,12 +430,12 @@ module glue(
                     end
                 end
                 else begin
-                    // Not receiving - process state machines
+                    // --- Not receiving: run state machines ---
 
                     if (write_strobe && !sdram_busy)
                         write_state <= 1;
 
-                    // --- Read state machine ---
+                    // Read state machine
                     case (read_state)
                         3'd1: if (!sdram_busy) begin
                             sdram_access_cmd <= SDRAM_ACTIVATE;
@@ -386,7 +470,7 @@ module glue(
                         end
                     endcase
 
-                    // --- Write state machine ---
+                    // Write state machine
                     case (write_state)
                         3'd1: if (!sdram_busy) begin
                             sdram_access_cmd <= SDRAM_ACTIVATE;
