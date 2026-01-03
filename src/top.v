@@ -312,7 +312,7 @@ module top #(
     // Glue Logic
     // -----------------------------------------------------------
     
-    wire [7:0] led_out;
+    wire [5:0] led_out;
     
     glue glue_i(
         .clk(clk),
@@ -355,6 +355,6 @@ module top #(
     );
     
     // LEDs are active low on Tang Nano 20K
-    assign led = ~led_out[5:0];
+    assign led = ~led_out;
 
 endmodule

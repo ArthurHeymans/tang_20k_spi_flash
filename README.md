@@ -55,11 +55,23 @@ The UART is exposed via the onboard BL616 USB debugger:
 
 Settings: **3,000,000 baud**, 8N1 (8 data bits, no parity, 1 stop bit)
 
-### Other Pins
+### Status LEDs
+
+| LED | FPGA Pin | Description |
+|-----|----------|-------------|
+| LED0 | 15 | Heartbeat (~2Hz blink) |
+| LED1 | 16 | SDRAM busy |
+| LED2 | 17 | CS low (chip selected) |
+| LED3 | 18 | SPI reset active |
+| LED4 | 19 | SPI write in progress |
+| LED5 | 20 | SPI active (not reset and CS low) |
+
+All LEDs are active low.
+
+### User Buttons
 
 | Signal | FPGA Pin | Description |
 |--------|----------|-------------|
-| LED[0:5] | 15-20  | Status LEDs (active low) |
 | BTN S1 | 88       | User button 1 |
 | BTN S2 | 87       | User button 2 |
 

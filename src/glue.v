@@ -38,7 +38,7 @@ module glue(
     // Debug
     input wire        log_strobe,
     input wire  [7:0] log_val,
-    output reg  [7:0] led
+    output reg  [5:0] led
 );
 
     // =========================================================================
@@ -150,13 +150,11 @@ module glue(
             led <= 0;
         end
         else begin
-            led[7] <= !spi_reset && !spi_csel_buf[1];  // SPI active
-            led[6] <= sdram_cmd_busy;
-            led[5] <= spi_writing;
-            led[4] <= spi_reset;
-            led[3] <= !spi_csel_buf[1];                // CS low
-            led[2] <= 0;
-            led[1] <= 0;
+            led[5] <= !spi_reset && !spi_csel_buf[1];  // SPI active
+            led[4] <= spi_writing;
+            led[3] <= spi_reset;
+            led[2] <= !spi_csel_buf[1];                // CS low
+            led[1] <= sdram_cmd_busy;
             led[0] <= heartbeat[25];                   // ~2Hz heartbeat
         end
     end
